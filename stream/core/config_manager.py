@@ -20,6 +20,7 @@ class Config:
         "MULTI_CLIENTS",
         "ONLY_API",
         "CLOUDINARY_API_SECRET",
+        "CORS_ORIGINS",
     }
     ONLY_API = False
     BOT_TOKEN = ""
