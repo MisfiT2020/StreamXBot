@@ -1,0 +1,9 @@
+services:
+  streamx-bot:
+    container_name: streamXBot
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: ["bash", "/app/start.sh"]
+    restart: on-failure

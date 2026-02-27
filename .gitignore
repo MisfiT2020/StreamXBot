@@ -1,0 +1,12 @@
+__pycache__/
+.venv/
+venv/
+config.py
+*.session*
+*.txt
+.env
+tes*
+*_cache
+GenCovers/
+!requirements.txt
+!test.py

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: streamx-api
+    env: docker
+    plan: free
+    autoDeploy: true
+
+    dockerfilePath: ./Dockerfile
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: CONFIG_GIST
+        sync: false

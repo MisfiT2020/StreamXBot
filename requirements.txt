@@ -1,0 +1,17 @@
+kurigram
+requests
+aiohttp
+tgcrypto
+dotenv
+pymongo
+apscheduler
+uvicorn[standard]
+aiofiles
+fastapi
+uvloop
+bs4
+httpx
+telegraph
+python-multipart
+pillow
+psutil
