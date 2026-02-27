@@ -3,9 +3,10 @@
     <img src="Assets/cover.jpg" alt="cover" width="300" />
   </p>
   <h2>StreamXBot</h2>
-  <p>A Telegram WebApp Streaming bot that lets you listen to music directly in the browser, even without Telegram.</p>
+  <p>A Self Hosted Telegram WebApp Streaming bot that lets you listen to music directly in the browser, even without Telegram. (free of cost)</p>
   <p>
-    • <code>Frontend: <a href="https://github.com/MisfiT2020/StreamXWeb">MisfiT2020/StreamXWeb</a></code>
+    • <code>Frontend: <a href="https://github.com/MisfiT2020/StreamXWeb">MisfiT2020/StreamXWeb</a></code><br>
+    • <code>Support: <a href="https://t.me/RaidenEiSupport">Group</a></code>
   </p>
 
   <p align="center">
@@ -63,50 +64,77 @@
 |---|---|---|
 | ![13](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/16.jpg) | ![14](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/17.jpg) | ![15](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/18.png) |
 
-## Quick health check
+## API REQUIRED
+- [Cloudinary](https://cloudinary.com/) for thumbnail storage.
+- [Spotify API](https://developer.spotify.com/) for music metadata.
 
-Once deployed, the API should respond:
 
-- `GET /health` → `{"status":"ok", ...}` (see [health.py](https://github.com/MisfiT2020/StreamXBot/blob/main/Api/routers/health.py))
+## BOT COMMANDS
 
-Example:
+- /ping - Ping the bot to check if it's alive.
+- /bs - to get the bot settings and edit the vars without deploying again.
+- /restart - to restart the bot.
 
-```bash
-curl -sS https://YOUR_BACKEND_URL/health
-```
-
----
 
 ## Configuration
 
 <details>
-<summary>Required env vars</summary>
+<summary>Show</summary>
 
-These must be set for the app to boot (see [config_manager.py](https://github.com/MisfiT2020/StreamXBot/blob/main/stream/core/config_manager.py)):
+<details>
+<summary>API RELATED</summary>
 
-- `BOT_TOKEN` (Telegram bot token, `123456:ABC...`)
-- `API_ID` (integer)
-- `API_HASH`
-- `MONGO_URI` (`mongodb://...` or `mongodb+srv://...`)
-- `OWNER_ID` (one ID or a list; the loader turns it into a list)
+- `SPOTIFY_CLIENT_ID` (Spotify API client ID)
+- `SPOTIFY_CLIENT_SECRET` (Spotify API client secret)
+- `CLOUDINARY_CLOUD_NAME` (Cloudinary cloud name)
+- `CLOUDINARY_API_KEY` (Cloudinary API key)
+- `CLOUDINARY_API_SECRET` (Cloudinary API secret)
 
 </details>
 
 <details>
-<summary>Common optional env vars</summary>
+<summary>BOT RELATED</summary>
 
-- `DATABASE_NAME` (default is `"Stream"` in [sample_config.py](https://github.com/MisfiT2020/StreamXBot/blob/main/sample_config.py))
-- `DEBUG` (`true/false`)
-- `CORS_ORIGINS` (comma/space-separated list of allowed origins)
-- `COOKIE_DOMAIN` (set only if you need cross-subdomain cookies)
-- `COOKIE_SECURE` (`true/false`)
-- `COOKIE_SAMESITE` (`lax|strict|none`)
-- `SESSION_STRING` (enables the userbot worker)
-- `SOURCE_CHANNEL_IDS` (space/comma-separated IDs; only used if userbot ingest is enabled)
-- `MULTI_CLIENTS` (`true/false`)
+- `BOT_TOKEN` (Telegram bot token, `123456:ABC...`)
+- `API_ID` (integer)
+- `API_HASH` (string)
+
+</details>
+
+<details>
+<summary>BACKEND RELATED</summary>
+
+- `CHANNEL_ID` to fetch the tracks from.
+- `MONGO_URI` (`mongodb://...` or `mongodb+srv://...`)
+- `OWNER_ID` (one ID or a list; the loader turns it into a list)
+- `DATABASE_NAME` 
+- `MULTI_CLIENT` (True/False) to stream via multiple Bots and load balancing
 - `MULTI_CLIENTS_1`, `MULTI_CLIENTS_2`, ... (additional bot tokens/session strings for multi-client mode)
+- `MUSIXMATCH`OR `LRCLIB` to get lyrics: MUSIXMATCH OVERRIDES LRCLIB
+- `DUMP_CHANNEL_ID` Dumps the Tracks into this channel when multiclient bot doesn't have the track in its database.
+- `SUDO_USERS` (user with sudo access)
+- `ONLY_API` (True/False) to only use the API and disable the bot.
+- `DEBUG` (True/False) to enable debug mode.
 
-For a full example, copy and edit [sample_config.py](https://github.com/MisfiT2020/StreamXBot/blob/main/sample_config.py).
+</details>
+
+<details>
+<summary>SESSION RELATED (FRONTEND) (Optional)</summary>
+
+- `SECRET_KEY` (for session storage)
+- `COOKIE_SECURE` (True/False) to enable secure cookies.
+- `CORS_ORIGIN` to allow domain
+- `COOKIE_SAMESITE` if the backend/frontend are on different domains, set this to `none` and `COOKIE_SECURE` to `true`.
+
+</details>
+
+<details>
+<summary>USERBOT</summary>
+
+- `SESSION_STRING` (enables the userbot worker)
+- `SOURCE_CHANNEL_IDS` for userbot to dump tracks from one or more channels.
+
+</details>
 
 </details>
 
@@ -167,6 +195,18 @@ Optional:
 
 </details>
 
+## Quick health check
+
+Once deployed, the API should respond:
+
+- `GET /health` → `{"status":"ok", ...}` (see [health.py](https://github.com/MisfiT2020/StreamXBot/blob/main/Api/routers/health.py))
+
+Example:
+
+```bash
+curl -sS https://YOUR_BACKEND_URL/health
+```
+
 ---
 
 ## Frontend deployment (Vite / Vercel / Netlify)
@@ -178,3 +218,28 @@ Frontend source in [MisfiT2020/StreamXWeb](https://github.com/MisfiT2020/StreamX
 Set this in your frontend build env:
 
 - `VITE_API_BASE_URL` = your backend base URL
+
+## BOT CONFIGURATION
+Follow these steps to set MiniApp in the bot:
+
+- Open your bot on BotFather
+- Go to Bot Settings > Configure Mini App > Edit Mini App URL 
+- Set the Mini App URL to your frontend domain (example: `https://your-frontend.vercel.app`)
+- Go to Change Mode > Set it to "Full Screen" for better experience.
+
+<details>
+<summary>Screenshots</summary>
+
+| 1 |
+| --- |
+| ![1](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot1.jpg) |
+
+| 2 | 3 | 4 |
+|---|---|---|
+| ![2](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot2.jpg) | ![3](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot3.jpg) | ![4](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot4.jpg) |
+
+| 5 | 6 | 7 |
+|---|---|---|
+| ![5](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot5.jpg) | ![6](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot6.jpg) | ![7](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot7.jpg) |
+
+</details>

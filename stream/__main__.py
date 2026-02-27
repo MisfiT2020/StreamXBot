@@ -16,6 +16,7 @@ except Exception:
 from uvicorn import Config as UvicornConfig, Server as UvicornServer
 
 from . import bot, scheduler, add_daily_playlist_jobs
+from stream.plugins.dev.updater import restart_notification
 from .database.MongoDb import db_handler
 from .helpers.logger import LOGGER
 from stream.core.config_manager import Config
@@ -180,6 +181,7 @@ async def main():
     await bot.start()
     me = await bot.get_me()
     await initialize_multi_clients(log, primary_user_id=int(getattr(me, "id")))
+    await restart_notification()
 
     server, server_task = await start_api(log)
 
