@@ -4,21 +4,36 @@ set -eo pipefail
 APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 echo "[common] APP_DIR=${APP_DIR}"
 
+
+IS_RENDER=0
+IS_HEROKU=0
+IS_KOYEB=0
+
 if [ -n "${RENDER:-}" ] || [ -n "${RENDER_SERVICE_ID:-}" ]; then
-  WANT_ENV_CONFIG=1
-elif [ -n "${DYNO:-}" ]; then
-  WANT_ENV_CONFIG=1
-elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  WANT_ENV_CONFIG=0
-else
+  IS_RENDER=1
+fi
+
+if [ -n "${DYNO:-}" ]; then
+  IS_HEROKU=1
+fi
+
+if [ -n "${KOYEB_APP_NAME:-}" ] || [ -n "${KOYEB_SERVICE_NAME:-}" ]; then
+  IS_KOYEB=1
+fi
+
+
+WANT_ENV_CONFIG=0
+
+if [ "$IS_RENDER" = "1" ] || [ "$IS_HEROKU" = "1" ] || [ "$IS_KOYEB" = "1" ]; then
   WANT_ENV_CONFIG=1
 fi
 
-echo "[common] WANT_ENV_CONFIG=${WANT_ENV_CONFIG:-0}"
+echo "[common] WANT_ENV_CONFIG=${WANT_ENV_CONFIG}"
 
-if [ "${WANT_ENV_CONFIG:-0}" = "1" ]; then
+
+if [ "$WANT_ENV_CONFIG" = "1" ]; then
   if [ -z "${CONFIG_GIST:-}" ]; then
-    echo "[common] WANT_ENV_CONFIG=1 but CONFIG_GIST is not set"
+    echo "[common] CONFIG_GIST not set"
     exit 1
   fi
 
@@ -38,23 +53,26 @@ if [ "${WANT_ENV_CONFIG:-0}" = "1" ]; then
       mv "${tmp_cfg}" "${APP_DIR}/config.py"
       echo "[common] config.py downloaded successfully"
     else
-      echo "[common] Downloaded file is empty"
+      echo "[common] Downloaded config is empty"
       rm -f "${tmp_cfg}"
       exit 1
     fi
   else
     rm -f "${tmp_cfg}"
-    echo "[common] Failed to download config.py from CONFIG_GIST"
+    echo "[common] Failed to download config.py"
     exit 1
   fi
 fi
 
+
 echo "[common] Checking config.py..."
+
 if [ -f "${APP_DIR}/config.py" ]; then
   echo "[common] config.py exists"
 else
   echo "[common] config.py NOT found!"
 fi
+
 
 VENV_PATH="${VENV_PATH:-/app/streamvenv}"
 
@@ -65,15 +83,20 @@ else
   echo "[common] No venv found at $VENV_PATH"
 fi
 
-if [ -n "${RENDER:-}" ] || [ -n "${RENDER_SERVICE_ID:-}" ]; then
-  echo "[Render] Detected Render environment → skipping git pull"
-elif [ -n "${DYNO:-}" ]; then
-  echo "[Heroku] DYNO=${DYNO} → skipping git pull"
+if [ "$IS_RENDER" = "1" ]; then
+  echo "[Render] Environment detected → skipping git pull"
+
+elif [ "$IS_HEROKU" = "1" ]; then
+  echo "[Heroku] Environment detected → skipping git pull"
+
+elif [ "$IS_KOYEB" = "1" ]; then
+  echo "[Koyeb] Environment detected → skipping git pull"
+
 elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "[VPS] Git repo detected → running git pull"
 
   if [ -n "${GITHUB_TOKEN:-}" ]; then
-    echo "[VPS] Configuring Git to use PAT for origin..."
+    echo "[VPS] Configuring Git authentication"
 
     ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
     ORIGIN_PATH=""
@@ -91,9 +114,12 @@ elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 
   git reset --hard
   git pull --ff-only
+
 else
   echo "[common] No git repo detected → skipping git pull"
 fi
 
+
 echo "[common] Starting bot..."
-python3 -m stream
+
+exec python3 -m stream
