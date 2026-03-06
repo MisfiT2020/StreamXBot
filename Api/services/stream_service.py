@@ -57,10 +57,12 @@ class _StreamHub:
     def __init__(
         self,
         *,
+        track_id: str,
         file_id: str,
         source_chat_id: int | None,
         source_message_id: int | None,
     ):
+        self.track_id = track_id
         self.file_id = file_id
         self.source_chat_id = source_chat_id
         self.source_message_id = source_message_id
@@ -97,25 +99,76 @@ class _StreamHub:
         from stream import acquire_stream_client, release_stream_client
 
         client_id = 0
+        refreshed = False
         try:
             client_id, client = await acquire_stream_client()
             LOG.info(f"Streaming started using client {client_id}")
-            target = self.file_id
-            if self.source_chat_id is not None and self.source_message_id is not None:
-                msg = await client.get_messages(self.source_chat_id, self.source_message_id)
-                if msg:
-                    target = msg
+            
+            while True:
+                target = self.file_id
+                if self.source_chat_id is not None and self.source_message_id is not None:
+                    try:
+                        msg = await client.get_messages(int(self.source_chat_id), int(self.source_message_id))
+                        if msg:
+                            target = msg
+                    except Exception as e:
+                        LOG.warning(f"Hub failed to fetch source message: {e}")
 
-            async for chunk in client.stream_media(target):
-                if not chunk:
+                try:
+                    # Calculate chunk offset to resume from
+                    start_chunk = self._total_written // _CHUNK_SIZE
+                    stream_kwargs: dict[str, int] = {}
+                    if start_chunk > 0:
+                        stream_kwargs["offset"] = int(start_chunk)
+                    
+                    # Track how much we've already skipped if we are resuming
+                    remaining_skip = max(0, self._total_written - (start_chunk * _CHUNK_SIZE))
+
+                    async for chunk in client.stream_media(target, **stream_kwargs):
+                        if not chunk:
+                            continue
+                        
+                        if remaining_skip > 0:
+                            if len(chunk) <= remaining_skip:
+                                remaining_skip -= len(chunk)
+                                continue
+                            chunk = chunk[remaining_skip:]
+                            remaining_skip = 0
+
+                        async with self._cond:
+                            start = self._total_written
+                            self._total_written += len(chunk)
+                            self._chunks.append((start, chunk))
+                            self._last_access = time.monotonic()
+                            self._gc_locked()
+                            self._cond.notify_all()
+                    return
+                except Exception as e:
+                    if refreshed:
+                        raise
+                    msg_str = str(e).upper()
+                    if "FILE_REFERENCE" not in msg_str and "FILE_REFERENCE_EXPIRED" not in msg_str:
+                        raise
+                    
+                    LOG.debug(f"Hub encountered expired reference, attempting internal refresh")
+                    
+                    # Full refresh of file_id if needed
+                    try:
+                        self.file_id = await _ensure_client_file_id(
+                            track_id=self.track_id,
+                            client_user_id=int(client_id),
+                            client=client,
+                            source_chat_id=self.source_chat_id,
+                            source_message_id=self.source_message_id,
+                            force=True,
+                        )
+                    except Exception as refresh_err:
+                        LOG.error(f"Hub failed to refresh file_id: {refresh_err}")
+                        if self.source_chat_id is None or self.source_message_id is None:
+                            raise e
+                    
+                    refreshed = True
                     continue
-                async with self._cond:
-                    start = self._total_written
-                    self._total_written += len(chunk)
-                    self._chunks.append((start, chunk))
-                    self._last_access = time.monotonic()
-                    self._gc_locked()
-                    self._cond.notify_all()
         except asyncio.CancelledError:
             raise
         except BaseException as e:
@@ -225,6 +278,7 @@ def _hub_key(file_id: str, source_chat_id: int | None, source_message_id: int | 
 
 async def _get_or_create_hub(
     *,
+    track_id: str,
     file_id: str,
     source_chat_id: int | None,
     source_message_id: int | None,
@@ -234,6 +288,7 @@ async def _get_or_create_hub(
         hub = _STREAM_HUBS.get(key)
         if hub is None:
             hub = _StreamHub(
+                track_id=track_id,
                 file_id=file_id,
                 source_chat_id=source_chat_id,
                 source_message_id=source_message_id,
@@ -640,6 +695,7 @@ async def _ensure_client_file_id(
     client,
     source_chat_id: int | None,
     source_message_id: int | None,
+    force: bool = False,
 ) -> str:
     lock = await _get_lock(f"{track_id}:{client_user_id}")
     async with lock:
@@ -647,6 +703,11 @@ async def _ensure_client_file_id(
         key = str(int(client_user_id))
         doc: dict | None = None
         telegram: dict = {}
+
+        # If force is True, we ignore the cache for the entire function call.
+        ignore_cache = force
+        if ignore_cache:
+            LOG.debug(f"stream file_id force refresh track={track_id} client={client_user_id}")
 
         for attempt in range(6):
             doc = await col.find_one(
@@ -656,12 +717,12 @@ async def _ensure_client_file_id(
             telegram = (doc or {}).get("telegram") or {}
             file_ids = telegram.get("file_ids") if isinstance(telegram.get("file_ids"), dict) else {}
             existing = (file_ids or {}).get(key)
-            if isinstance(existing, str) and existing.strip():
+            if not ignore_cache and isinstance(existing, str) and existing.strip():
                 LOG.debug(
                     f"stream file_id cache hit track={track_id} client={client_user_id} file_id={existing.strip()}"
                 )
                 return existing.strip()
-
+            
             resolved_chat_id = source_chat_id
             if resolved_chat_id is None:
                 resolved_chat_id = doc.get("source_chat_id") if isinstance(doc, dict) else None
@@ -771,46 +832,68 @@ async def _ensure_client_file_id(
 
 async def _stream_range(
     *,
+    track_id: str,
     client_user_id: int,
     client,
     file_id: str,
+    source_chat_id: int | None,
+    source_message_id: int | None,
     from_bytes: int,
     until_bytes: int | None,
 ) -> AsyncIterator[bytes]:
+    cursor = max(0, int(from_bytes))
+    refreshed = False
     try:
-        from_bytes = max(0, int(from_bytes))
         if until_bytes is not None:
-            until_bytes = max(from_bytes, int(until_bytes))
+            until_bytes = max(cursor, int(until_bytes))
+        while True:
+            start_chunk = cursor // _CHUNK_SIZE
+            stream_kwargs: dict[str, int] = {}
+            if start_chunk:
+                stream_kwargs["offset"] = int(start_chunk)
 
-        start_chunk = from_bytes // _CHUNK_SIZE
-        stream_kwargs: dict[str, int] = {}
-        if start_chunk:
-            stream_kwargs["offset"] = int(start_chunk)
+            stream_cursor = int(start_chunk) * int(_CHUNK_SIZE)
+            try:
+                async for chunk in client.stream_media(file_id, **stream_kwargs):
+                    if not chunk:
+                        continue
 
-        cursor = int(start_chunk) * int(_CHUNK_SIZE)
-        async for chunk in client.stream_media(file_id, **stream_kwargs):
-            if not chunk:
-                continue
+                    chunk_start = stream_cursor
+                    chunk_end = stream_cursor + len(chunk) - 1
+                    stream_cursor += len(chunk)
 
-            chunk_start = cursor
-            chunk_end = cursor + len(chunk) - 1
-            cursor += len(chunk)
+                    if chunk_end < cursor:
+                        continue
+                    if until_bytes is not None and chunk_start > until_bytes:
+                        return
 
-            if chunk_end < from_bytes:
-                continue
-            if until_bytes is not None and chunk_start > until_bytes:
+                    out_start = max(cursor, chunk_start)
+                    out_end = chunk_end if until_bytes is None else min(until_bytes, chunk_end)
+                    rel_start = out_start - chunk_start
+                    rel_end = out_end - chunk_start
+                    out_chunk = chunk[int(rel_start) : int(rel_end) + 1]
+
+                    if out_chunk:
+                        yield out_chunk
+                        cursor = int(out_end) + 1
+                    if until_bytes is not None and out_end >= until_bytes:
+                        return
                 return
-
-            out_start = max(from_bytes, chunk_start)
-            out_end = chunk_end if until_bytes is None else min(until_bytes, chunk_end)
-            rel_start = out_start - chunk_start
-            rel_end = out_end - chunk_start
-            chunk = chunk[int(rel_start) : int(rel_end) + 1]
-
-            if chunk:
-                yield chunk
-            if until_bytes is not None and out_end >= until_bytes:
-                return
+            except Exception as e:
+                if refreshed or source_chat_id is None or source_message_id is None:
+                    raise
+                msg = str(e).upper()
+                if "FILE_REFERENCE" not in msg and "FILE_REFERENCE_EXPIRED" not in msg:
+                    raise
+                file_id = await _ensure_client_file_id(
+                    track_id=track_id,
+                    client_user_id=int(client_user_id),
+                    client=client,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                    force=True,
+                )
+                refreshed = True
     finally:
         from stream import release_stream_client
 
@@ -819,23 +902,48 @@ async def _stream_range(
 
 async def _direct_stream(
     *,
+    track_id: str,
     client_user_id: int,
     client,
     file_id: str,
+    source_chat_id: int | None,
+    source_message_id: int | None,
     start_byte: int = 0,
 ) -> AsyncIterator[bytes]:
-    remaining_skip = max(0, int(start_byte))
+    cursor = max(0, int(start_byte))
+    refreshed = False
     try:
-        async for chunk in client.stream_media(file_id):
-            if not chunk:
-                continue
-            if remaining_skip > 0:
-                if len(chunk) <= remaining_skip:
-                    remaining_skip -= len(chunk)
-                    continue
-                chunk = chunk[remaining_skip:]
-                remaining_skip = 0
-            yield chunk
+        while True:
+            remaining_skip = max(0, int(cursor))
+            try:
+                async for chunk in client.stream_media(file_id):
+                    if not chunk:
+                        continue
+                    if remaining_skip > 0:
+                        if len(chunk) <= remaining_skip:
+                            remaining_skip -= len(chunk)
+                            continue
+                        chunk = chunk[remaining_skip:]
+                        remaining_skip = 0
+                    if chunk:
+                        cursor += len(chunk)
+                        yield chunk
+                return
+            except Exception as e:
+                if refreshed or source_chat_id is None or source_message_id is None:
+                    raise
+                msg = str(e).upper()
+                if "FILE_REFERENCE" not in msg and "FILE_REFERENCE_EXPIRED" not in msg:
+                    raise
+                file_id = await _ensure_client_file_id(
+                    track_id=track_id,
+                    client_user_id=int(client_user_id),
+                    client=client,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                    force=True,
+                )
+                refreshed = True
     finally:
         from stream import release_stream_client
 
@@ -844,32 +952,72 @@ async def _direct_stream(
 
 async def _stream_file_id(
     *,
+    track_id: str,
     file_id: str,
     source_chat_id: int | None,
     source_message_id: int | None,
     start_byte: int = 0,
 ) -> AsyncIterator[bytes]:
-    hub = await _get_or_create_hub(
-        file_id=file_id,
-        source_chat_id=source_chat_id,
-        source_message_id=source_message_id,
-    )
+    refreshed = False
     sent = max(0, int(start_byte))
-    try:
-        async for chunk in hub.iter_bytes(start_byte=int(start_byte)):
-            sent += len(chunk)
-            yield chunk
-    except _StreamBehindError:
-        from stream import acquire_stream_client
-
-        client_user_id, client = await acquire_stream_client()
-        async for chunk in _direct_stream(
-            client_user_id=int(client_user_id),
-            client=client,
+    while True:
+        hub = await _get_or_create_hub(
+            track_id=track_id,
             file_id=file_id,
-            start_byte=int(sent),
-        ):
-            yield chunk
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+        )
+        try:
+            async for chunk in hub.iter_bytes(start_byte=int(sent)):
+                sent += len(chunk)
+                yield chunk
+            return
+        except _StreamBehindError:
+            from stream import acquire_stream_client
+
+            client_user_id, client = await acquire_stream_client()
+            async for chunk in _direct_stream(
+                track_id=track_id,
+                client_user_id=int(client_user_id),
+                client=client,
+                file_id=file_id,
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+                start_byte=int(sent),
+            ):
+                sent += len(chunk)
+                yield chunk
+            return
+        except Exception as e:
+            if refreshed or source_chat_id is None or source_message_id is None:
+                raise
+            msg = str(e).upper()
+            if "FILE_REFERENCE" not in msg and "FILE_REFERENCE_EXPIRED" not in msg:
+                raise
+            
+            # Invalidate the current hub
+            key = _hub_key(file_id, source_chat_id, source_message_id)
+            async with _STREAM_HUBS_LOCK:
+                hub_to_close = _STREAM_HUBS.pop(key, None)
+                if hub_to_close:
+                    await hub_to_close.close()
+            
+            from stream import acquire_stream_client, release_stream_client
+            client_user_id, client = await acquire_stream_client()
+            try:
+                file_id = await _ensure_client_file_id(
+                    track_id=track_id,
+                    client_user_id=int(client_user_id),
+                    client=client,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                    force=True,
+                )
+            finally:
+                await release_stream_client(client_user_id)
+            
+            refreshed = True
+            continue
 
 
 async def stream_track(track_id: str, request: Request):
@@ -1031,17 +1179,23 @@ async def stream_track(track_id: str, request: Request):
 
     if status_code == 206:
         iterator = _stream_range(
+            track_id=track_id,
             client_user_id=int(client_user_id),
             client=client,
             file_id=file_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
             from_bytes=from_bytes,
             until_bytes=until_bytes,
         )
     else:
         iterator = _direct_stream(
+            track_id=track_id,
             client_user_id=int(client_user_id),
             client=client,
             file_id=file_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
             start_byte=0,
         )
     wrapped = _wrap_with_play_count(
@@ -1094,22 +1248,8 @@ async def download_track(track_id: str):
         "Content-Disposition": _content_disposition_header(filename=filename, track_id=track_id, mime_type=mime_type),
     }
 
-    file_size: Optional[int] = None
-    try:
-        if telegram.get("file_size") is not None:
-            file_size = int(telegram.get("file_size"))
-    except Exception:
-        file_size = None
-    if file_size is None:
-        try:
-            if doc.get("file_size") is not None:
-                file_size = int(doc.get("file_size"))
-        except Exception:
-            file_size = None
-    if file_size is not None and file_size > 0:
-        headers["Content-Length"] = str(file_size)
-
     iterator = _stream_file_id(
+        track_id=track_id,
         file_id=file_id or track_id,
         source_chat_id=source_chat_id,
         source_message_id=source_message_id,
@@ -1153,6 +1293,7 @@ async def warm_track_cached(track_id: str) -> dict:
         return {"ok": False, "error": "missing_source"}
 
     await _get_or_create_hub(
+        track_id=track_id,
         file_id=file_id or track_id,
         source_chat_id=source_chat_id,
         source_message_id=source_message_id,
