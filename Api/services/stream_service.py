@@ -1339,8 +1339,6 @@ async def warm_track_cached(track_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Track not found")
 
     telegram = doc.get("telegram") or {}
-    file_id = (telegram.get("file_id") or "").strip()
-
     source_chat_id = doc.get("source_chat_id")
     source_message_id = doc.get("source_message_id")
     try:
@@ -1354,13 +1352,23 @@ async def warm_track_cached(track_id: str) -> dict:
     except Exception:
         source_message_id = None
 
-    if not file_id and (source_chat_id is None or source_message_id is None):
-        return {"ok": False, "error": "missing_source"}
+    # LIGHTWEIGHT WARMING:
+    # Instead of starting a Hub (which starts a producer task and consumes a client),
+    # we just ensure the file_id is resolved and cached for the primary client.
+    # This makes the eventual stream start much faster without 'Streaming started' noise.
+    from stream import acquire_stream_client, release_stream_client
+    
+    # We only warm for the primary client to avoid exhausting others.
+    client_id, client = await acquire_stream_client()
+    try:
+        await _ensure_client_file_id(
+            track_id=track_id,
+            client_user_id=int(client_id),
+            client=client,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+        )
+    finally:
+        await release_stream_client(client_id)
 
-    await _get_or_create_hub(
-        track_id=track_id,
-        file_id=file_id or track_id,
-        source_chat_id=source_chat_id,
-        source_message_id=source_message_id,
-    )
     return {"ok": True}

@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 from Api.services.stream_service import warm_track_cached
 from Api.utils.auth import require_user_id, verify_auth_token
 from stream.database.MongoDb import db_handler
+from stream.helpers.logger import LOGGER
+
+LOG = LOGGER(__name__)
 
 _WS_LOCK = asyncio.Lock()
 _WS_ROOMS: dict[str, set[WebSocket]] = {}
@@ -94,21 +97,23 @@ def _ws_auth_payload(ws: WebSocket) -> dict:
 
 def _compute_position(playback: dict) -> tuple[float, bool]:
     try:
-        pos = float(playback.get("position_sec") or 0.0)
+        pos_orig = float(playback.get("position_sec") or 0.0)
     except Exception:
-        pos = 0.0
+        pos_orig = 0.0
     
+    pos = pos_orig
     is_playing = bool(playback.get("is_playing"))
     started_at = playback.get("started_at")
     duration = playback.get("duration_sec")
     
     if is_playing:
         try:
-            started_at = float(started_at)
+            started_at_f = float(started_at)
         except Exception:
-            started_at = 0.0
-        if started_at > 0:
-            pos = pos + max(0.0, _now() - started_at)
+            started_at_f = 0.0
+        if started_at_f > 0:
+            diff = _now() - started_at_f
+            pos = pos_orig + max(0.0, diff)
 
     if duration is not None:
         try:
@@ -118,7 +123,7 @@ def _compute_position(playback: dict) -> tuple[float, bool]:
                 is_playing = False
         except Exception:
             pass
-
+            
     return max(0.0, float(pos)), is_playing
 
 
@@ -152,6 +157,10 @@ def _serialize_session(doc: dict) -> dict:
     out = dict(doc or {})
     if "_id" in out:
         out["_id"] = str(out["_id"])
+    
+    # Authoritative server time for clock sync
+    out["server_time"] = _now()
+    
     host = _as_int(out.get("host_user_id"))
     if host is not None:
         out["host_user_id"] = int(host)
@@ -175,18 +184,38 @@ def _serialize_session(doc: dict) -> dict:
             mm.pop("photo_url", None)
             normalized.append(mm)
         out["members"] = normalized
+    
     playback = out.get("playback")
     if isinstance(playback, dict):
         pb = dict(playback)
-        if "started_at" in pb and pb["started_at"] is not None:
+        
+        # Calculate live state to see if it's naturally ended (auto-stop logic)
+        pos_live, playing_live = _compute_position(pb)
+        
+        orig_playing = bool(pb.get("is_playing"))
+        # We update the playing status in case the server-side auto-stop triggered.
+        pb["is_playing"] = playing_live
+        
+        if pb.get("started_at") is not None:
             try:
                 pb["started_at"] = float(pb["started_at"])
             except Exception:
                 pb["started_at"] = None
         
-        pos, playing = _compute_position(pb)
-        pb["position_sec"] = pos
-        pb["is_playing"] = playing
+        if pb.get("position_sec") is not None:
+            try:
+                pb["position_sec"] = float(pb["position_sec"])
+            except Exception:
+                pb["position_sec"] = 0.0
+
+        # CRITICAL: If we are forcing a stop because the track ended, 
+        # we must send the end position as the static position, otherwise 
+        # the client will jump back to the base position (massive skip).
+        if orig_playing and not playing_live:
+            pb["position_sec"] = pos_live
+            LOG.debug(f"[jam_state] auto-stop triggered id={out.get('_id')} final_pos={pos_live:.2f}")
+
+        LOG.debug(f"[jam_state] id={out.get('_id')} base_pos={pb.get('position_sec')} started_at={pb.get('started_at')} live_pos={pos_live:.2f} playing={playing_live}")
         out["playback"] = pb
     return out
 
@@ -490,6 +519,7 @@ async def jam_play(jam_id: str, user_id: int = Depends(require_user_id)):
     playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}    
     pos, _ = _compute_position(playback)
     now = _now()
+    LOG.info(f"[jam_play] jam_id={jam_id} pos={pos:.2f} user_id={user_id}")
     updates = {
         "playback.position_sec": float(pos),
         "playback.started_at": now,
@@ -512,6 +542,7 @@ async def jam_pause(jam_id: str, user_id: int = Depends(require_user_id)):
     playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}    
     pos, _ = _compute_position(playback)
     now = _now()
+    LOG.info(f"[jam_pause] jam_id={jam_id} pos={pos:.2f} user_id={user_id}")
     updates = {
         "playback.position_sec": float(pos),
         "playback.started_at": now,
@@ -535,8 +566,10 @@ async def jam_seek(jam_id: str, payload: JamSeekRequest, user_id: int = Depends(
     playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
     _, is_playing = _compute_position(playback)
     now = _now()
+    new_pos = max(0.0, float(payload.position_sec or 0.0))
+    LOG.info(f"[jam_seek] jam_id={jam_id} new_pos={new_pos:.2f} user_id={user_id}")
     updates = {
-        "playback.position_sec": max(0.0, float(payload.position_sec or 0.0)),
+        "playback.position_sec": new_pos,
         "playback.started_at": now,
         "playback.is_playing": bool(is_playing),
         "updated_at": now,
@@ -568,6 +601,10 @@ async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int =
     else:
         q2.insert(int(pos), track_id)
     now = _now()
+    playback = doc.get("playback") or {}
+    curr_pos, _ = _compute_position(playback)
+    LOG.info(f"[jam_queue_add] jam_id={jam_id} track_id={track_id} pos={curr_pos:.2f} queue_len={len(q2)}")
+    
     await col.update_one({"_id": jam_id}, {"$set": {"queue": q2, "updated_at": now}})
     doc2 = await col.find_one({"_id": jam_id})
     try:
