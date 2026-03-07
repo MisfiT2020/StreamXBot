@@ -983,121 +983,6 @@ async def _direct_stream(
         await release_stream_client(client_user_id)
 
 
-async def _stream_file_id(
-    *,
-    track_id: str,
-    file_id: str,
-    source_chat_id: int | None,
-    source_message_id: int | None,
-    start_byte: int = 0,
-    file_size: int | None = None,
-) -> AsyncIterator[bytes]:
-    refreshed = False
-    sent = max(0, int(start_byte))
-    while True:
-        if file_size is not None and sent >= file_size:
-            return
-
-        hub = await _get_or_create_hub(
-            track_id=track_id,
-            file_id=file_id,
-            source_chat_id=source_chat_id,
-            source_message_id=source_message_id,
-        )
-        try:
-            async for chunk in hub.iter_bytes(start_byte=int(sent)):
-                sent += len(chunk)
-                yield chunk
-            
-            if file_size is not None and sent < file_size:
-                LOG.warning(f"Hub finished prematurely sent={sent} expected={file_size}, retrying...")
-                continue
-            return
-        except _StreamBehindError:
-            from stream import acquire_stream_client
-
-            client_user_id, client = await acquire_stream_client()
-            try:
-                # Ensure the current client has a valid file_id
-                current_file_id = await _ensure_client_file_id(
-                    track_id=track_id,
-                    client_user_id=int(client_user_id),
-                    client=client,
-                    source_chat_id=source_chat_id,
-                    source_message_id=source_message_id,
-                )
-                async for chunk in _direct_stream(
-                    track_id=track_id,
-                    client_user_id=int(client_user_id),
-                    client=client,
-                    file_id=current_file_id,
-                    source_chat_id=source_chat_id,
-                    source_message_id=source_message_id,
-                    start_byte=int(sent),
-                ):
-                    sent += len(chunk)
-                    yield chunk
-                
-                if file_size is not None and sent < file_size:
-                    LOG.warning(f"Direct stream finished prematurely sent={sent} expected={file_size}, retrying...")
-                    continue
-                return
-            except Exception as e:
-                if refreshed or source_chat_id is None or source_message_id is None:
-                    raise
-                msg = str(e).upper()
-                if "FILE_REFERENCE" not in msg and "FILE_REFERENCE_EXPIRED" not in msg:
-                    raise
-                
-                # Refresh file_id and retry
-                client_user_id_ref, client_ref = await acquire_stream_client()
-                try:
-                    file_id = await _ensure_client_file_id(
-                        track_id=track_id,
-                        client_user_id=int(client_user_id_ref),
-                        client=client_ref,
-                        source_chat_id=source_chat_id,
-                        source_message_id=source_message_id,
-                        force=True,
-                    )
-                finally:
-                    from stream import release_stream_client
-                    await release_stream_client(client_user_id_ref)
-                
-                refreshed = True
-                continue
-        except Exception as e:
-            if refreshed or source_chat_id is None or source_message_id is None:
-                raise
-            msg = str(e).upper()
-            if "FILE_REFERENCE" not in msg and "FILE_REFERENCE_EXPIRED" not in msg:
-                raise
-            
-            LOG.debug(f"Stream encountered expired reference in hub, refreshing...")
-            # Invalidate the current hub
-            key = _hub_key(file_id, source_chat_id, source_message_id)
-            async with _STREAM_HUBS_LOCK:
-                hub_to_close = _STREAM_HUBS.pop(key, None)
-                if hub_to_close:
-                    await hub_to_close.close()
-            
-            from stream import acquire_stream_client, release_stream_client
-            client_user_id, client = await acquire_stream_client()
-            try:
-                file_id = await _ensure_client_file_id(
-                    track_id=track_id,
-                    client_user_id=int(client_user_id),
-                    client=client,
-                    source_chat_id=source_chat_id,
-                    source_message_id=source_message_id,
-                    force=True,
-                )
-            finally:
-                await release_stream_client(client_user_id)
-            
-            refreshed = True
-            continue
-
 
 async def stream_track(track_id: str, request: Request):
     if bool(getattr(Config, "ONLY_API", False)) or bot is None:
@@ -1289,7 +1174,7 @@ async def stream_track(track_id: str, request: Request):
     return StreamingResponse(wrapped, status_code=status_code, headers=headers, media_type=mime_type)
 
 
-async def download_track(track_id: str):
+async def download_track(track_id: str, request: Request):
     if bool(getattr(Config, "ONLY_API", False)) or bot is None:
         raise HTTPException(status_code=503, detail="streaming disabled")
     col = get_audio_tracks_collection()
@@ -1302,7 +1187,7 @@ async def download_track(track_id: str):
 
     telegram = doc.get("telegram") or {}
     audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
-    file_id = (telegram.get("file_id") or "").strip()
+    primary_file_id = (telegram.get("file_id") or "").strip()
 
     source_chat_id = doc.get("source_chat_id")
     source_message_id = doc.get("source_message_id")
@@ -1317,7 +1202,7 @@ async def download_track(track_id: str):
     except Exception:
         source_message_id = None
 
-    if not file_id and (source_chat_id is None or source_message_id is None):
+    if not primary_file_id and (source_chat_id is None or source_message_id is None):
         raise HTTPException(status_code=404, detail="Track source unavailable")
 
     file_size: Optional[int] = None
@@ -1335,23 +1220,107 @@ async def download_track(track_id: str):
 
     mime_type = (telegram.get("mime_type") or "audio/mpeg").strip() or "audio/mpeg"
     filename = _build_download_filename(track_id=track_id, audio=audio, telegram=telegram, mime_type=mime_type)
+    
+    range_header = (request.headers.get("range") or request.headers.get("Range") or "").strip()
+    start_byte, end_byte = _parse_range_header(range_header)
+
+    has_range = bool(range_header) and start_byte is not None
+    from_bytes = int(start_byte or 0)
+
+    until_bytes: int | None = None
+    if has_range:
+        if end_byte is not None:
+            until_bytes = int(end_byte)
+        elif file_size is not None:
+            until_bytes = int(file_size) - 1
+    if file_size is not None and until_bytes is not None:
+        until_bytes = min(int(until_bytes), int(file_size) - 1)
+
+    if file_size is not None and has_range and from_bytes >= file_size:
+        raise HTTPException(status_code=416, detail="range not satisfiable")
+
+    status_code = 206 if (has_range and file_size is not None and until_bytes is not None) else 200
+
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Disposition": _content_disposition_header(filename=filename, track_id=track_id, mime_type=mime_type),
     }
 
-    if file_size is not None:
+    if status_code == 206 and file_size is not None and until_bytes is not None:
+        headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+        headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
+    elif file_size is not None:
         headers["Content-Length"] = str(file_size)
 
-    iterator = _stream_file_id(
-        track_id=track_id,
-        file_id=file_id or track_id,
-        source_chat_id=source_chat_id,
-        source_message_id=source_message_id,
-        start_byte=0,
-        file_size=file_size,
-    )
-    return StreamingResponse(iterator, status_code=200, headers=headers, media_type=mime_type)
+    file_ids_for_pick = telegram.get("file_ids") if isinstance(telegram.get("file_ids"), dict) else {}
+    preferred_user_ids: list[int] = []
+    for k, v in (file_ids_for_pick or {}).items():
+        if not isinstance(v, str) or not v.strip():
+            continue
+        try:
+            preferred_user_ids.append(int(k))
+        except Exception:
+            pass
+
+    from stream import acquire_stream_client, acquire_stream_client_prefer, release_stream_client
+
+    if preferred_user_ids:
+        client_user_id, client = await acquire_stream_client_prefer(preferred_user_ids)
+    else:
+        client_user_id, client = await acquire_stream_client()
+
+    try:
+        client_key = str(int(client_user_id))
+        file_ids = telegram.get("file_ids") if isinstance(telegram.get("file_ids"), dict) else {}
+        file_id = (file_ids or {}).get(client_key)
+        if isinstance(file_id, str):
+            file_id = file_id.strip()
+        else:
+            file_id = ""
+
+        primary_uid = get_primary_client_user_id()
+        if not file_id and primary_uid is not None and int(primary_uid) == int(client_user_id) and primary_file_id:
+            file_id = primary_file_id
+            await get_audio_tracks_collection().update_one(
+                {"_id": track_id},
+                {"$set": {f"telegram.file_ids.{client_key}": file_id, "updated_at": time.time()}},
+            )
+
+        if not file_id:
+            file_id = await _ensure_client_file_id(
+                track_id=track_id,
+                client_user_id=int(client_user_id),
+                client=client,
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+            )
+    except Exception:
+        await release_stream_client(int(client_user_id))
+        raise
+
+    if status_code == 206:
+        iterator = _stream_range(
+            track_id=track_id,
+            client_user_id=int(client_user_id),
+            client=client,
+            file_id=file_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            from_bytes=from_bytes,
+            until_bytes=until_bytes,
+        )
+    else:
+        iterator = _direct_stream(
+            track_id=track_id,
+            client_user_id=int(client_user_id),
+            client=client,
+            file_id=file_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            start_byte=0,
+        )
+
+    return StreamingResponse(iterator, status_code=status_code, headers=headers, media_type=mime_type)
 
 
 async def warm_track_cached(track_id: str) -> dict:

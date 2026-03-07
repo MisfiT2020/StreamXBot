@@ -235,8 +235,8 @@ async def track_stream_head(track_id: str, request: Request):
 
 
 @router.get("/tracks/{track_id}/download")
-async def track_download(track_id: str):
-    return await download_track(track_id)
+async def track_download(track_id: str, request: Request):
+    return await download_track(track_id, request)
 
 
 @router.get("/tracks/{track_id}/warm")
