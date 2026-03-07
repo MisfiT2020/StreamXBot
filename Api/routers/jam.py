@@ -92,7 +92,7 @@ def _ws_auth_payload(ws: WebSocket) -> dict:
     return verify_auth_token(token)
 
 
-def _compute_position(playback: dict) -> float:
+def _compute_position(playback: dict) -> tuple[float, bool]:
     try:
         pos = float(playback.get("position_sec") or 0.0)
     except Exception:
@@ -115,13 +115,11 @@ def _compute_position(playback: dict) -> float:
             d = float(duration)
             if pos >= d:
                 pos = d
-                # Note: We don't modify the DB here as this is a compute-on-read function,
-                # but the serialized state will reflect it.
-                playback["is_playing"] = False
+                is_playing = False
         except Exception:
             pass
 
-    return max(0.0, float(pos))
+    return max(0.0, float(pos)), is_playing
 
 
 async def _warm_tracks(track_ids: list[str]) -> None:
@@ -179,14 +177,17 @@ def _serialize_session(doc: dict) -> dict:
         out["members"] = normalized
     playback = out.get("playback")
     if isinstance(playback, dict):
-        if "started_at" in playback and playback["started_at"] is not None:
+        pb = dict(playback)
+        if "started_at" in pb and pb["started_at"] is not None:
             try:
-                playback["started_at"] = float(playback["started_at"])
+                pb["started_at"] = float(pb["started_at"])
             except Exception:
-                playback["started_at"] = None
+                pb["started_at"] = None
         
-        playback["position_sec"] = _compute_position(playback)
-        out["playback"] = playback
+        pos, playing = _compute_position(pb)
+        pb["position_sec"] = pos
+        pb["is_playing"] = playing
+        out["playback"] = pb
     return out
 
 
@@ -486,8 +487,8 @@ async def jam_play(jam_id: str, user_id: int = Depends(require_user_id)):
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="play"):
         raise HTTPException(status_code=403, detail="not allowed")
-    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
-    pos = _compute_position(playback)
+    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}    
+    pos, _ = _compute_position(playback)
     now = _now()
     updates = {
         "playback.position_sec": float(pos),
@@ -508,8 +509,8 @@ async def jam_pause(jam_id: str, user_id: int = Depends(require_user_id)):
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="pause"):
         raise HTTPException(status_code=403, detail="not allowed")
-    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
-    pos = _compute_position(playback)
+    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}    
+    pos, _ = _compute_position(playback)
     now = _now()
     updates = {
         "playback.position_sec": float(pos),
@@ -532,7 +533,7 @@ async def jam_seek(jam_id: str, payload: JamSeekRequest, user_id: int = Depends(
         raise HTTPException(status_code=403, detail="not allowed")
 
     playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
-    is_playing = bool(playback.get("is_playing"))
+    _, is_playing = _compute_position(playback)
     now = _now()
     updates = {
         "playback.position_sec": max(0.0, float(payload.position_sec or 0.0)),
@@ -543,7 +544,6 @@ async def jam_seek(jam_id: str, payload: JamSeekRequest, user_id: int = Depends(
     await col.update_one({"_id": jam_id}, {"$set": updates})
     await _broadcast_fresh_state(jam_id)
     return {"ok": True}
-
 
 @router.post("/{jam_id}/queue/add")
 async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int = Depends(require_user_id)):
