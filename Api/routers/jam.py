@@ -97,8 +97,11 @@ def _compute_position(playback: dict) -> float:
         pos = float(playback.get("position_sec") or 0.0)
     except Exception:
         pos = 0.0
+    
     is_playing = bool(playback.get("is_playing"))
     started_at = playback.get("started_at")
+    duration = playback.get("duration_sec")
+    
     if is_playing:
         try:
             started_at = float(started_at)
@@ -106,6 +109,18 @@ def _compute_position(playback: dict) -> float:
             started_at = 0.0
         if started_at > 0:
             pos = pos + max(0.0, _now() - started_at)
+
+    if duration is not None:
+        try:
+            d = float(duration)
+            if pos >= d:
+                pos = d
+                # Note: We don't modify the DB here as this is a compute-on-read function,
+                # but the serialized state will reflect it.
+                playback["is_playing"] = False
+        except Exception:
+            pass
+
     return max(0.0, float(pos))
 
 
@@ -169,11 +184,8 @@ def _serialize_session(doc: dict) -> dict:
                 playback["started_at"] = float(playback["started_at"])
             except Exception:
                 playback["started_at"] = None
-        if "position_sec" in playback and playback["position_sec"] is not None:
-            try:
-                playback["position_sec"] = float(playback["position_sec"])
-            except Exception:
-                playback["position_sec"] = 0.0
+        
+        playback["position_sec"] = _compute_position(playback)
         out["playback"] = playback
     return out
 
@@ -313,6 +325,13 @@ async def jam_create(
     track_id = _sanitize_track_id(payload.track_id)
     if not track_id:
         raise HTTPException(status_code=400, detail="track_id is required")
+    
+    from Api.services.track_service import get_track_by_id
+    track_doc = await get_track_by_id(track_id)
+    duration = None
+    if track_doc and isinstance(track_doc.get("audio"), dict):
+        duration = track_doc["audio"].get("duration_sec")
+
     now = _now()
     jam_id = f"jam_{uuid.uuid4().hex}"
     host_member: dict[str, object] = {"user_id": int(user_id), "role": "host"}
@@ -327,6 +346,7 @@ async def jam_create(
         "updated_at": now,
         "playback": {
             "track_id": track_id,
+            "duration_sec": duration,
             "position_sec": float(payload.position_sec or 0.0),
             "started_at": now if bool(payload.is_playing) else now,
             "is_playing": bool(payload.is_playing),
@@ -594,18 +614,48 @@ async def jam_next(jam_id: str, user_id: int = Depends(require_user_id)):
 
     queue = doc.get("queue") if isinstance(doc.get("queue"), list) else []
     q2 = [str(x) for x in queue if isinstance(x, str) and x.strip()]
+    
+    now = _now()
     if not q2:
-        raise HTTPException(status_code=400, detail="queue is empty")
+        await col.update_one(
+            {"_id": jam_id},
+            {
+                "$set": {
+                    "playback.is_playing": False,
+                    "updated_at": now,
+                }
+            },
+        )
+        await _broadcast_fresh_state(jam_id)
+        return {"ok": True, "track_id": None}
+
     next_track = _sanitize_track_id(q2.pop(0))
     if not next_track:
-        raise HTTPException(status_code=400, detail="invalid next track")
-    now = _now()
+        await col.update_one(
+            {"_id": jam_id},
+            {
+                "$set": {
+                    "playback.is_playing": False,
+                    "updated_at": now,
+                }
+            },
+        )
+        await _broadcast_fresh_state(jam_id)
+        return {"ok": True, "track_id": None}
+
+    from Api.services.track_service import get_track_by_id
+    track_doc = await get_track_by_id(next_track)
+    duration = None
+    if track_doc and isinstance(track_doc.get("audio"), dict):
+        duration = track_doc["audio"].get("duration_sec")
+
     await col.update_one(
         {"_id": jam_id},
         {
             "$set": {
                 "queue": q2,
                 "playback.track_id": next_track,
+                "playback.duration_sec": duration,
                 "playback.position_sec": 0.0,
                 "playback.started_at": now,
                 "playback.is_playing": True,
