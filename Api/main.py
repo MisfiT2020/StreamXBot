@@ -13,6 +13,9 @@ from Api.routers.test import router as test_router
 from Api.routers.tracks import router as tracks_router
 from Api.routers.cover import router as cover_router
 from Api.routers.admin_refresh import router as admin_refresh_router
+from Api.routers.friends import router as friends_router
+from Api.routers.notifications import router as notifications_router
+from Api.routers.presence import router as presence_router
 from stream.core.config_manager import Config
 
 @asynccontextmanager
@@ -43,3 +46,6 @@ app.include_router(favourites_router)
 app.include_router(cover_router)
 app.include_router(admin_refresh_router)
 app.include_router(test_router)
+app.include_router(friends_router)
+app.include_router(notifications_router)
+app.include_router(presence_router)

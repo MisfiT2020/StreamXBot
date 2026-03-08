@@ -145,6 +145,11 @@ class MongoDatabase:
             'user_favourites': 'userFavourites',
             'userplayback_collection': 'userPlayback',
             'globalplayback_collection': 'globalPlayback',
+            'friends_collection': 'friends',
+            'friend_requests_collection': 'friendRequests',
+            'presence_collection': 'presence',
+            'listening_status_collection': 'listeningStatus',
+            'notifications_collection': 'notifications',
         }
         for attr, col_name in collections.items():
             coll = self.database[col_name]
@@ -165,6 +170,27 @@ class MongoDatabase:
             global_col = self.globalplayback_collection.collection
             await global_col.create_index([("plays", -1)])
             await global_col.create_index([("last_played_at", -1)])
+        except Exception:
+            pass
+        try:
+            presence_col = self.presence_collection.collection
+            await presence_col.create_index([("user_id", 1)], unique=True)
+            await presence_col.create_index([("last_seen", 1)], expireAfterSeconds=90)
+        except Exception:
+            pass
+        try:
+            listening_col = self.listening_status_collection.collection
+            await listening_col.create_index([("user_id", 1)], unique=True)
+        except Exception:
+            pass
+        try:
+            notif_col = self.notifications_collection.collection
+            await notif_col.create_index([("user_id", 1), ("created_at", -1)])
+        except Exception:
+            pass
+        try:
+            freq_col = self.friend_requests_collection.collection
+            await freq_col.create_index([("to", 1), ("from", 1), ("status", 1)])
         except Exception:
             pass
 
