@@ -18,6 +18,19 @@ async def send_friend_request(payload: FriendRequestPayload, user_id: int = Depe
         raise HTTPException(status_code=404, detail="Target user not found")
 
     freq_col = db_handler.get_collection("friendRequests").collection
+    
+    # If the other person already sent a request to us, auto-accept it
+    reverse_req = await freq_col.find_one({"from": payload.to, "to": user_id, "status": "pending"})
+    if reverse_req:
+        await freq_col.update_many(
+            {"$or": [{"from": payload.to, "to": user_id}, {"from": user_id, "to": payload.to}]},
+            {"$set": {"status": "accepted"}}
+        )
+        friends_col = db_handler.get_collection("friends").collection
+        await friends_col.update_one({"_id": user_id}, {"$addToSet": {"friend_ids": payload.to}, "$set": {"updated_at": time.time()}}, upsert=True)
+        await friends_col.update_one({"_id": payload.to}, {"$addToSet": {"friend_ids": user_id}, "$set": {"updated_at": time.time()}}, upsert=True)
+        return {"ok": True, "message": "Mutual friend request detected and auto-accepted"}
+
     existing = await freq_col.find_one({"from": user_id, "to": payload.to, "status": "pending"})
     if existing:
         return {"ok": True, "message": "Request already sent"}
@@ -79,11 +92,15 @@ async def accept_friend_request(payload: AcceptRequestPayload, user_id: int = De
     if not req:
         raise HTTPException(status_code=404, detail="Friend request not found")
         
-    await freq_col.update_one({"_id": req["_id"]}, {"$set": {"status": "accepted"}})
+    # Mark both possible directions as accepted to clean up mutual requests
+    await freq_col.update_many(
+        {"$or": [{"from": payload.userId, "to": user_id}, {"from": user_id, "to": payload.userId}]},
+        {"$set": {"status": "accepted"}}
+    )
     
     friends_col = db_handler.get_collection("friends").collection
-    await friends_col.update_one({"_id": user_id}, {"$addToSet": {"friend_ids": req["from"]}, "$set": {"updated_at": time.time()}}, upsert=True)
-    await friends_col.update_one({"_id": req["from"]}, {"$addToSet": {"friend_ids": user_id}, "$set": {"updated_at": time.time()}}, upsert=True)
+    await friends_col.update_one({"_id": user_id}, {"$addToSet": {"friend_ids": payload.userId}, "$set": {"updated_at": time.time()}}, upsert=True)
+    await friends_col.update_one({"_id": payload.userId}, {"$addToSet": {"friend_ids": user_id}, "$set": {"updated_at": time.time()}}, upsert=True)
     
     return {"ok": True}
 
@@ -107,11 +124,65 @@ async def get_friends(user_id: int = Depends(require_user_id)):
         
     users_col = db_handler.get_collection("users").collection
     cursor = users_col.find({"_id": {"$in": friend_ids}}, {"first_name": 1, "profile_url": 1, "photo_url": 1, "settings": 1})
+    
+    # Fetch current presence statuses for all friends
+    presence_col = db_handler.get_collection("presence").collection
+    p_cursor = presence_col.find({"user_id": {"$in": friend_ids}})
+    presence_map = {}
+    async for p in p_cursor:
+        presence_map[p["user_id"]] = {
+            "online": p.get("online", False),
+            "last_seen": p.get("last_seen"),
+            "device": p.get("device")
+        }
+
     friends = []
     async for f in cursor:
-        f["_id"] = int(f["_id"])
+        uid = int(f["_id"])
+        f["_id"] = uid
+        
+        # Default offline state if no presence doc exists
+        p_data = presence_map.get(uid, {"online": False, "last_seen": None, "device": None})
+        
+        # Optional: Safety check - if last_seen is older than 2 minutes, mark as offline manually 
+        # in case the TTL index hasn't cleaned it up yet.
+        if p_data["online"] and p_data["last_seen"]:
+            if time.time() - p_data["last_seen"] > 120:
+                p_data["online"] = False
+
+        f["presence"] = p_data
         friends.append(f)
+        
     return {"ok": True, "friends": friends}
+
+class ListeningUpdatePayload(BaseModel):
+    track_id: str
+    is_playing: bool = True
+    position_sec: float = 0
+    jam_id: Optional[str] = None
+
+from Api.routers.presence import manager, broadcast_listening_to_friends
+
+@router.post("/listening")
+async def update_listening_status(payload: ListeningUpdatePayload, user_id: int = Depends(require_user_id)):
+    list_col = db_handler.get_collection("listeningStatus").collection
+    update_data = {
+        "track_id": payload.track_id,
+        "started_at": time.time(),
+        "is_playing": payload.is_playing,
+        "position_sec": payload.position_sec,
+        "jam_id": payload.jam_id,
+        "updated_at": time.time()
+    }
+    await list_col.update_one(
+        {"user_id": user_id},
+        {"$set": update_data},
+        upsert=True
+    )
+
+    await broadcast_listening_to_friends(user_id, update_data)
+
+    return {"ok": True}
 
 @router.get("/listening")
 async def get_friends_listening(user_id: int = Depends(require_user_id)):

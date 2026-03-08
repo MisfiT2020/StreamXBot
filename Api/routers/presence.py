@@ -47,6 +47,39 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+async def broadcast_listening_to_friends(user_id: int, update_data: dict):
+    users_col = db_handler.get_collection("users").collection
+    user = await users_col.find_one({"_id": user_id}, {"settings": 1})
+    if not user:
+        return
+    settings = user.get("settings", {})
+    share = settings.get("share_listening", "friends")
+    if share == "nobody":
+        return
+
+    friends_col = db_handler.get_collection("friends").collection
+    friend_doc = await friends_col.find_one({"_id": user_id})
+    if not friend_doc:
+        return
+        
+    friend_ids = friend_doc.get("friend_ids", [])
+    if not friend_ids:
+        return
+        
+    broadcast_msg = {
+        "type": "friend_listening_update",
+        "user_id": user_id,
+        "track_id": update_data.get("track_id"),
+        "is_playing": update_data.get("is_playing", True),
+        "position_sec": update_data.get("position_sec", 0),
+        "jam_id": update_data.get("jam_id"),
+        "updated_at": update_data.get("updated_at")
+    }
+
+    for f_id in friend_ids:
+        await manager.broadcast_to_user(f_id, broadcast_msg)
+
+
 @router.websocket("/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
     try:
@@ -87,6 +120,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         {"$set": update_data},
                         upsert=True
                     )
+                    
+                    # Broadcast the new status to connected friends!
+                    await broadcast_listening_to_friends(user_id, update_data)
                     
             except json.JSONDecodeError:
                 pass
