@@ -1,5 +1,7 @@
 import time
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from bson import ObjectId
 from Api.schemas.friends import FriendRequestPayload, AcceptRequestPayload, InviteJamPayload, SettingsPayload, FcmTokenPayload
 from Api.utils.auth import require_user_id
