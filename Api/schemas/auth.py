@@ -20,3 +20,6 @@ class SetCredentialsRequest(BaseModel):
 class SetCookieRequest(BaseModel):
     token: str
 
+
+class FCMTokenRequest(BaseModel):
+    fcm_token: str

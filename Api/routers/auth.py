@@ -8,7 +8,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from Api.routers.webapp import extract_telegram_user
-from Api.schemas.auth import PasswordLoginRequest, SetCookieRequest, SetCredentialsRequest, TgLoginRequest
+from Api.schemas.auth import PasswordLoginRequest, SetCookieRequest, SetCredentialsRequest, TgLoginRequest, FCMTokenRequest
 from Api.utils.auth import create_auth_token, require_user_id, verify_auth_token
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
@@ -265,3 +265,13 @@ async def auth_me(user_id: int = Depends(require_user_id)):
         if isinstance(pu, str) and pu:
             doc["profile_url"] = pu
     return {"ok": True, "user": doc}
+
+@router.post("/fcm-token")
+async def update_fcm_token(payload: FCMTokenRequest, user_id: int = Depends(require_user_id)):
+    col = db_handler.get_collection("users").collection
+    await col.update_one(
+        {"_id": int(user_id)},
+        {"$set": {"fcm_token": payload.fcm_token, "updated_at": time.time()}},
+        upsert=True,
+    )
+    return {"ok": True}

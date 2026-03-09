@@ -10,3 +10,4 @@ tes*
 GenCovers/
 !requirements.txt
 !test.py
+*-firebase-adminsdk-*.json

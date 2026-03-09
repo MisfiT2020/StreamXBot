@@ -33,6 +33,7 @@ class Config:
     SUDO_USERS = [] 
     SECRET_KEY = ""
     DEBUG = ""
+    FIREBASE_CREDENTIALS = ""
     COLLEGE = True
     TEXT_COLOR = "#FFFFFF"
     CLOUDINARY_CLOUD_NAME = ""
