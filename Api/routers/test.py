@@ -20,42 +20,12 @@ class FCMTestRequest(BaseModel):
 @router.post("/test-fcm")
 async def test_fcm_notification(req: FCMTestRequest):
     try:
-        if not firebase_admin._apps:
-            from firebase_admin import credentials
-            from stream.core.config_manager import Config
-            import os
-            import json
-            import base64
-            
-            b64_cred = os.environ.get("FIREBASE_CRED_B64")
-            if b64_cred:
-                cred_dict = json.loads(base64.b64decode(b64_cred).decode("utf-8"))
-                cred = credentials.Certificate(cred_dict)
-            else:
-                cred_cfg = Config.FIREBASE_CREDENTIALS
-                if cred_cfg and isinstance(cred_cfg, str) and len(cred_cfg) > 20:
-                    # XOR Decode using the SECRET_KEY
-                    key = Config.SECRET_KEY.encode('utf-8')
-                    enc_data = base64.b64decode(cred_cfg)
-                    dec_data = bytes(a ^ b for a, b in zip(enc_data, (key * (len(enc_data) // len(key) + 1))[:len(enc_data)]))
-                    cred_dict = json.loads(dec_data.decode("utf-8"))
-                    cred = credentials.Certificate(cred_dict)
-                else:
-                    if not cred_cfg or not isinstance(cred_cfg, str):
-                        cred_cfg = os.path.join(os.path.dirname(__file__), "..", "..", "service_account.json")
-                    cred = credentials.Certificate(cred_cfg)
-                
-            firebase_admin.initialize_app(cred)
-            
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title=req.title,
-                body=req.body,
-            ),
-            token=req.token,
-        )
-        response = messaging.send(message)
-        return {"status": "success", "message_id": response}
+        from Api.utils.firebase import send_push_notification
+        response = send_push_notification(req.token, req.title, req.body)
+        if response:
+            return {"status": "success", "message_id": response}
+        else:
+            return {"status": "error", "detail": "Failed to send push notification check logs."}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 

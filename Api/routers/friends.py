@@ -223,7 +223,7 @@ from Api.routers.presence import manager
 @router.post("/invite-jam")
 async def invite_to_jam(payload: InviteJamPayload, user_id: int = Depends(require_user_id)):
     users_col = db_handler.get_collection("users").collection
-    target = await users_col.find_one({"_id": payload.toUserId}, {"settings": 1})
+    target = await users_col.find_one({"_id": payload.toUserId}, {"settings": 1, "fcm_token": 1, "fcm_tokens": 1})
     if not target:
         raise HTTPException(status_code=404, detail="Target user not found")
         
@@ -245,6 +245,30 @@ async def invite_to_jam(payload: InviteJamPayload, user_id: int = Depends(requir
         "jam_id": payload.jamId,
         "from": user_id
     })
+    
+    # Send FCM Push Notification
+    tokens = set()
+    if target.get("fcm_token"):
+        tokens.add(target.get("fcm_token"))
+    if target.get("fcm_tokens"):
+        tokens.update(target.get("fcm_tokens"))
+        
+    if tokens:
+        sender = await users_col.find_one({"_id": user_id}, {"first_name": 1, "username": 1})
+        sender_name = sender.get("first_name") or sender.get("username") or "Someone"
+        
+        from Api.utils.firebase import send_multicast_notification
+        
+        title = "Jam Session Invite"
+        body = f"{sender_name} invited you to listen together."
+        data = {
+            "type": "jam_invite",
+            "jam_id": str(payload.jamId),
+            "from_user": str(user_id)
+        }
+        
+        # Multicast helper takes a list
+        send_multicast_notification(list(tokens), title, body, data)
     
     return {"ok": True}
 
