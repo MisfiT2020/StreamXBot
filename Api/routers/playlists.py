@@ -250,28 +250,59 @@ async def add_track_to_playlist(
     payload: PlaylistTrackAdd,
     user_id: int = Depends(require_user_id),
 ):
-    track_id = (payload.track_id or "").strip()
-    if not track_id:
-        raise HTTPException(status_code=400, detail="track_id is required")
+    t_ids = []
+    if isinstance(payload.track_id, list):
+        t_ids.extend(payload.track_id)
+    elif payload.track_id:
+        t_ids.append(payload.track_id)
+        
+    if payload.track_ids:
+        t_ids.extend(payload.track_ids)
+        
+    track_ids = []
+    for tid in t_ids:
+        tid_str = str(tid).strip()
+        if tid_str and tid_str not in track_ids:
+            track_ids.append(tid_str)
+
+    if not track_ids:
+        raise HTTPException(status_code=400, detail="track_id or track_ids is required")
 
     await _get_playlist_or_404(playlist_id, user_id)
 
-    track = await get_track_by_id(track_id)
-    if not track:
-        raise HTTPException(status_code=404, detail="track not found")
+    tracks = await get_tracks_by_ids(track_ids)
+    if not tracks:
+        raise HTTPException(status_code=404, detail="tracks not found")
+        
+    valid_track_ids = {str(t.get("_id")) for t in tracks}
 
     tracks_col = db_handler.get_collection("playlist_tracks").collection
     last = await tracks_col.find_one({"playlist_id": playlist_id}, {"position": 1}, sort=[("position", -1)])
     next_pos = int(last.get("position") or 0) + 1 if last else 1
 
     now = time.time()
-    res = await tracks_col.update_one(
-        {"playlist_id": playlist_id, "track_id": track_id},
-        {"$setOnInsert": {"position": next_pos, "added_at": now}, "$set": {"playlist_id": playlist_id, "track_id": track_id}},
-        upsert=True,
-    )
+    
+    upserted_count = 0
+    for tid in track_ids:
+        if tid not in valid_track_ids:
+            continue
+            
+        res = await tracks_col.update_one(
+            {"playlist_id": playlist_id, "track_id": tid},
+            {
+                "$setOnInsert": {"position": next_pos, "added_at": now},
+                "$set": {"playlist_id": playlist_id, "track_id": tid}
+            },
+            upsert=True
+        )
+        if res.upserted_id is not None:
+            upserted_count += 1
+            next_pos += 1
 
-    return {"ok": True, "already_exists": res.upserted_id is None}
+    if len(track_ids) == 1:
+        return {"ok": True, "already_exists": upserted_count == 0}
+        
+    return {"ok": True, "added": upserted_count}
 
 
 @router.delete("/playlists/{playlist_id}/tracks/{track_id}")

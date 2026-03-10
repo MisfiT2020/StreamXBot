@@ -21,6 +21,7 @@ class Config:
         "ONLY_API",
         "CLOUDINARY_API_SECRET",
         "CORS_ORIGINS",
+        "FIREBASE_CREDENTIALS",
     }
     ONLY_API = False
     BOT_TOKEN = ""

@@ -67,7 +67,7 @@ def send_multicast_notification(tokens: list, title: str, body: str, data: dict 
             data=data or {},
             tokens=tokens,
         )
-        response = messaging.send_multicast(message)
+        response = messaging.send_each_for_multicast(message)
         return response
     except Exception as e:
         LOGGER(__name__).error(f"Failed to send Firebase multicast notification: {e}")

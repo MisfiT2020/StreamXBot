@@ -27,7 +27,8 @@ class PlaylistsResponse(BaseModel):
 
 
 class PlaylistTrackAdd(BaseModel):
-    track_id: str
+    track_id: str | list[str] | None = None
+    track_ids: list[str] | None = None
 
 
 class PlaylistTracksResponse(BaseModel):
