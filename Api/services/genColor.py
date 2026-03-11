@@ -93,15 +93,28 @@ def _collage_hash(urls: list[str]) -> str:
     raw = ("\n".join(norm)).encode("utf-8", errors="ignore")
     return hashlib.sha1(raw).hexdigest()
 
-def _fetch_image(url: str, *, timeout: int = 10) -> Image.Image | None:
+import functools
+
+@functools.lru_cache(maxsize=128)
+def _fetch_image_bytes(url: str) -> bytes | None:
     u = (url or "").strip()
     if not u:
         return None
     try:
-        resp = requests.get(u, timeout=timeout)
-        if resp.status_code != 200 or not resp.content:
-            return None
-        img = Image.open(BytesIO(resp.content))
+        resp = requests.get(u, timeout=10)
+        if resp.status_code == 200 and resp.content:
+            return resp.content
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_image(url: str, *, timeout: int = 10) -> Image.Image | None:
+    content = _fetch_image_bytes(url)
+    if not content:
+        return None
+    try:
+        img = Image.open(BytesIO(content))
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGB")
         return img
@@ -407,6 +420,9 @@ def delete_from_cloudinary(public_id: str) -> bool:
         return False
 
 
+_RENDER_SEMAPHORE = asyncio.Semaphore(1)
+
+
 async def _render_cover_async(
     *,
     top_text: str,
@@ -416,15 +432,16 @@ async def _render_cover_async(
     seed_id: str | None,
     collage_urls: list[str] | None,
 ) -> dict[str, Any]:
-    return await asyncio.to_thread(
-        render_cover,
-        top_text=top_text,
-        bottom_text=bottom_text,
-        out_path=out_path,
-        base_color=base_color,
-        seed_id=seed_id,
-        collage_urls=collage_urls,
-    )
+    async with _RENDER_SEMAPHORE:
+        return await asyncio.to_thread(
+            render_cover,
+            top_text=top_text,
+            bottom_text=bottom_text,
+            out_path=out_path,
+            base_color=base_color,
+            seed_id=seed_id,
+            collage_urls=collage_urls,
+        )
 
 
 async def _upload_to_cloudinary_async(*, file_path: str, folder: str, public_id: str) -> str | None:

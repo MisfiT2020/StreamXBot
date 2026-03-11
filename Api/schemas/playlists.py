@@ -50,3 +50,12 @@ class AvailablePlaylistItem(BaseModel):
 
 class AvailablePlaylistsResponse(BaseModel):
     items: list[AvailablePlaylistItem]
+
+
+class PlaylistShareResponse(BaseModel):
+    playlist_id: str
+    name: str
+    cover_url: str | None = None
+    normal_thumbnail: str | None = None
+    tracks: list[TrackResponse]
+    created_at: float | None = None

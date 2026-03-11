@@ -107,7 +107,7 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
     col = db_handler.get_collection("user_playlists").collection
     cursor = col.find(
         {"user_id": int(user_id)},
-        {"_id": 1, "name": 1, "cover_id": 1, "cover_url": 1, "created_at": 1, "updated_at": 1},
+        {"_id": 1, "name": 1, "cover_id": 1, "cover_url": 1, "collage_hash": 1, "created_at": 1, "updated_at": 1},
     ).sort([("created_at", -1)])
     raw_items: list[dict] = []
     async for doc in cursor:
@@ -117,6 +117,7 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
                 "name": (doc.get("name") or ""),
                 "cover_id": doc.get("cover_id"),
                 "cover_url": doc.get("cover_url"),
+                "collage_hash": doc.get("collage_hash"),
                 "created_at": doc.get("created_at"),
                 "updated_at": doc.get("updated_at"),
             }
@@ -163,10 +164,14 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
         except Exception:
             tracks_by_id = {}
 
+    from Api.services.genColor import _collage_hash
+
     items: list[PlaylistItem] = []
     for it in raw_items:
         pid = str(it.get("playlist_id") or "")
         ids = by_playlist.get(pid) or []
+        
+        # Resolve track thumbnails
         track_thumbs: list[str] = []
         for tid in ids[:4]:
             tdoc = tracks_by_id.get(tid)
@@ -176,16 +181,36 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
             if url:
                 track_thumbs.append(url)
 
-        cover = await ensure_user_playlist_cover(playlist_id=pid, name=str(it.get("name") or ""), force=False, collage_urls=track_thumbs[:4])
-        normal_cover = await ensure_user_playlist_normal_cover(playlist_id=pid, name=str(it.get("name") or ""), force=False, collage_urls=track_thumbs[:4])
-        cover_url = cover.get("url") if isinstance(cover, dict) else it.get("cover_url")
-        cover_id = cover.get("cover_id") if isinstance(cover, dict) else it.get("cover_id")
-        normal_thumbnail = normal_cover.get("url") if isinstance(normal_cover, dict) else None
-        if cover_url and (cover_url != it.get("cover_url") or cover_id != it.get("cover_id")):
+        cover_url = it.get("cover_url")
+        cover_id = it.get("cover_id")
+        existing_hash = it.get("collage_hash")
+        
+        # Calculate expected hash
+        current_hash = _collage_hash(track_thumbs) if track_thumbs else None
+        
+        # Determine if we NEED to call ensure_...
+        # 1. No cover_url at all
+        # 2. Tracks were added (current_hash exists) but hash doesn't match DB (upgrade needed)
+        should_refresh = not cover_url or (current_hash and current_hash != existing_hash)
+
+        normal_thumbnail = None
+        if should_refresh:
+            cover = await ensure_user_playlist_cover(playlist_id=pid, name=str(it.get("name") or ""), force=False, collage_urls=track_thumbs)
+            normal_cover = await ensure_user_playlist_normal_cover(playlist_id=pid, name=str(it.get("name") or ""), force=False, collage_urls=track_thumbs)
+            cover_url = cover.get("url") if isinstance(cover, dict) else it.get("cover_url")
+            cover_id = cover.get("cover_id") if isinstance(cover, dict) else it.get("cover_id")
+            normal_thumbnail = normal_cover.get("url") if isinstance(normal_cover, dict) else None
+            
+            # Update playlist doc with new info and hash
             try:
                 await db_handler.get_collection("user_playlists").collection.update_one(
                     {"_id": pid, "user_id": int(user_id)},
-                    {"$set": {"cover_id": cover_id, "cover_url": cover_url, "updated_at": time.time()}},
+                    {"$set": {
+                        "cover_id": cover_id, 
+                        "cover_url": cover_url, 
+                        "collage_hash": current_hash,
+                        "updated_at": time.time()
+                    }},
                 )
             except Exception:
                 pass
