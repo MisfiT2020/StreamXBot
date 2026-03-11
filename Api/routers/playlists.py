@@ -12,6 +12,7 @@ from Api.schemas.playlists import (
     PlaylistsResponse,
 )
 from Api.services.genColor import ensure_user_playlist_cover, ensure_user_playlist_normal_cover
+from Api.services.playlist_thumbnail import ensure_playlist_thumbnail
 from Api.services.track_service import get_track_by_id, get_tracks_by_ids
 from Api.utils.auth import require_user_id
 from stream.database.MongoDb import db_handler
@@ -106,7 +107,17 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
     col = db_handler.get_collection("user_playlists").collection
     cursor = col.find(
         {"user_id": int(user_id)},
-        {"_id": 1, "name": 1, "cover_id": 1, "cover_url": 1, "created_at": 1, "updated_at": 1},
+        {
+            "_id": 1,
+            "name": 1,
+            "cover_id": 1,
+            "cover_url": 1,
+            "thumbnail_url": 1,
+            "thumbnail_hash": 1,
+            "thumbnail_covers": 1,
+            "created_at": 1,
+            "updated_at": 1,
+        },
     ).sort([("created_at", -1)])
     raw_items: list[dict] = []
     async for doc in cursor:
@@ -116,6 +127,9 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
                 "name": (doc.get("name") or ""),
                 "cover_id": doc.get("cover_id"),
                 "cover_url": doc.get("cover_url"),
+                "thumbnail_url": doc.get("thumbnail_url"),
+                "thumbnail_hash": doc.get("thumbnail_hash"),
+                "thumbnail_covers": doc.get("thumbnail_covers") or [],
                 "created_at": doc.get("created_at"),
                 "updated_at": doc.get("updated_at"),
             }
@@ -133,7 +147,7 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
         cursor2 = (
             tracks_col.find({"playlist_id": pid}, {"_id": 0, "track_id": 1})
             .sort([("position", 1)])
-            .limit(4)
+            .limit(10) # Fetch a few more to find unique covers
         )
         ids: list[str] = []
         async for row in cursor2:
@@ -145,7 +159,7 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
 
     needed_ids: list[str] = []
     for pid, ids in by_playlist.items():
-        needed_ids.extend(ids[:4])
+        needed_ids.extend(ids)
 
     unique_ids: list[str] = []
     seen: set[str] = set()
@@ -166,11 +180,20 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
     for it in raw_items:
         pid = str(it.get("playlist_id") or "")
         ids = by_playlist.get(pid) or []
-        track_thumbs: list[str] = []
-        for tid in ids[:4]:
+        
+        # Collect track docs for this playlist
+        playlist_tracks = []
+        for tid in ids:
             tdoc = tracks_by_id.get(tid)
-            if not isinstance(tdoc, dict):
-                continue
+            if tdoc:
+                playlist_tracks.append(tdoc)
+        
+        # New thumbnail system
+        new_thumb = await ensure_playlist_thumbnail(playlist_id=pid, tracks=playlist_tracks)
+        
+        # Legacy thumbnail system (fallback)
+        track_thumbs: list[str] = []
+        for tdoc in playlist_tracks[:4]:
             url = _track_thumbnail_url(tdoc)
             if url:
                 track_thumbs.append(url)
@@ -180,15 +203,10 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
         cover_url = cover.get("url") if isinstance(cover, dict) else it.get("cover_url")
         cover_id = cover.get("cover_id") if isinstance(cover, dict) else it.get("cover_id")
         normal_thumbnail = normal_cover.get("url") if isinstance(normal_cover, dict) else None
-        if cover_url and (cover_url != it.get("cover_url") or cover_id != it.get("cover_id")):
-            try:
-                await db_handler.get_collection("user_playlists").collection.update_one(
-                    {"_id": pid, "user_id": int(user_id)},
-                    {"$set": {"cover_id": cover_id, "cover_url": cover_url, "updated_at": time.time()}},
-                )
-            except Exception:
-                pass
-
+        
+        # We don't update cover_url in DB here to avoid unnecessary writes, 
+        # but ensure_playlist_thumbnail already updated it if needed.
+        
         items.append(
             PlaylistItem(
                 playlist_id=pid,
@@ -197,6 +215,9 @@ async def list_playlists(user_id: int = Depends(require_user_id)):
                 cover_id=cover_id,
                 cover_url=cover_url,
                 normal_thumbnail=normal_thumbnail,
+                thumbnail_url=new_thumb.get("thumbnail_url") if new_thumb else it.get("thumbnail_url"),
+                thumbnail_hash=new_thumb.get("thumbnail_hash") if new_thumb else it.get("thumbnail_hash"),
+                thumbnail_covers=new_thumb.get("thumbnail_covers") if new_thumb else it.get("thumbnail_covers") or [],
                 created_at=it.get("created_at"),
                 updated_at=it.get("updated_at"),
             )
@@ -299,6 +320,22 @@ async def add_track_to_playlist(
             upserted_count += 1
             next_pos += 1
 
+    # Regenerate thumbnail
+    cursor2 = (
+        tracks_col.find({"playlist_id": playlist_id}, {"_id": 0, "track_id": 1})
+        .sort([("position", 1)])
+        .limit(10)
+    )
+    all_ids = []
+    async for row in cursor2:
+        tid = row.get("track_id")
+        if tid:
+            all_ids.append(tid)
+    
+    if all_ids:
+        all_tracks = await get_tracks_by_ids(all_ids)
+        await ensure_playlist_thumbnail(playlist_id=playlist_id, tracks=all_tracks)
+
     if len(track_ids) == 1:
         return {"ok": True, "already_exists": upserted_count == 0}
         
@@ -319,6 +356,29 @@ async def remove_track_from_playlist(
 
     tracks_col = db_handler.get_collection("playlist_tracks").collection
     res = await tracks_col.delete_one({"playlist_id": playlist_id, "track_id": track_id})
+    
+    # Regenerate thumbnail
+    cursor2 = (
+        tracks_col.find({"playlist_id": playlist_id}, {"_id": 0, "track_id": 1})
+        .sort([("position", 1)])
+        .limit(10)
+    )
+    all_ids = []
+    async for row in cursor2:
+        tid = row.get("track_id")
+        if tid:
+            all_ids.append(tid)
+    
+    if all_ids:
+        all_tracks = await get_tracks_by_ids(all_ids)
+        await ensure_playlist_thumbnail(playlist_id=playlist_id, tracks=all_tracks)
+    else:
+        # No tracks left, clear thumbnail fields
+        await db_handler.get_collection("user_playlists").collection.update_one(
+            {"_id": playlist_id, "user_id": int(user_id)},
+            {"$set": {"thumbnail_url": None, "thumbnail_hash": None, "thumbnail_covers": [], "updated_at": time.time()}}
+        )
+
     return {"ok": True, "deleted": bool(getattr(res, "deleted_count", 0))}
 
 
