@@ -383,6 +383,30 @@ def upload_to_cloudinary(*, file_path: str, folder: str, public_id: str) -> str 
     return secure_url.strip()
 
 
+def delete_from_cloudinary(public_id: str) -> bool:
+    cfg = _cloudinary_config()
+    cloud_name = cfg["cloud_name"]
+    api_key = cfg["api_key"]
+    api_secret = cfg["api_secret"]
+    if not cloud_name or not api_key or not api_secret:
+        return False
+        
+    ts = str(int(time.time()))
+    sign_params = {"public_id": public_id, "timestamp": ts}
+    signature = _cloudinary_signature(sign_params, api_secret)
+    url = f"https://api.cloudinary.com/v1_1/{cloud_name}/image/destroy"
+    
+    try:
+        resp = requests.post(
+            url,
+            data={**sign_params, "api_key": api_key, "signature": signature},
+            timeout=30,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 async def _render_cover_async(
     *,
     top_text: str,

@@ -659,15 +659,6 @@ async def refresh_daily_playlist_cache(
         except Exception:
             normal_thumbnail = None
 
-    # New thumbnail system
-    from Api.services.playlist_thumbnail import ensure_playlist_thumbnail
-    tracks_for_thumb = await get_tracks_by_ids(track_ids[:10])
-    system_key = f"{k}_{scope}" if scope else k
-    new_thumb = await ensure_playlist_thumbnail(playlist_id=doc_id, tracks=tracks_for_thumb, is_system=True, system_key=system_key)
-    new_thumbnail_url = new_thumb.get("thumbnail_url") if new_thumb else None
-    new_thumbnail_hash = new_thumb.get("thumbnail_hash") if new_thumb else None
-    new_thumbnail_covers = new_thumb.get("thumbnail_covers") if new_thumb else []
-
     res = {
         "key": k,
         "date": d,
@@ -675,9 +666,6 @@ async def refresh_daily_playlist_cache(
         "track_count": len(track_ids),
         "cover_url": cover_url,
         "normal_thumbnail": normal_thumbnail,
-        "thumbnail_url": new_thumbnail_url,
-        "thumbnail_hash": new_thumbnail_hash,
-        "thumbnail_covers": new_thumbnail_covers,
         "generated_at": time.time(),
     }
     await col.insert_one({"_id": doc_id, "track_ids": track_ids, **res})
@@ -770,32 +758,9 @@ async def refresh_user_top_played_cache(*, user_id: int, limit: int = 500, refre
         cover_url = cover.get("url") if isinstance(cover, dict) else None
         normal = await ensure_user_top_played_normal_cover(user_id=int(uid), force=bool(force_cover), collage_urls=collage_urls)
         normal_thumbnail = normal.get("url") if isinstance(normal, dict) else None
-
-    # New thumbnail system
-    from Api.services.playlist_thumbnail import ensure_playlist_thumbnail
-    tracks_for_thumb = await get_tracks_by_ids(track_ids[:10])
-    # For user top played, we use a per-user system key
-    user_system_key = f"user_{uid}_top_played"
-    new_thumb = await ensure_playlist_thumbnail(playlist_id=f"user-top-played:{uid}", tracks=tracks_for_thumb, is_system=True, system_key=user_system_key)
-    new_thumbnail_url = new_thumb.get("thumbnail_url") if new_thumb else None
-    new_thumbnail_hash = new_thumb.get("thumbnail_hash") if new_thumb else None
-    new_thumbnail_covers = new_thumb.get("thumbnail_covers") if new_thumb else []
-
     await cache_col.update_one(
         {"_id": str(uid)},
-        {
-            "$set": {
-                "user_id": int(uid),
-                "track_ids": track_ids,
-                "generated_at": now,
-                "cover_id": cover_id,
-                "cover_url": cover_url,
-                "normal_thumbnail": normal_thumbnail,
-                "thumbnail_url": new_thumbnail_url,
-                "thumbnail_hash": new_thumbnail_hash,
-                "thumbnail_covers": new_thumbnail_covers,
-            }
-        },
+        {"$set": {"user_id": int(uid), "track_ids": track_ids, "generated_at": now, "cover_id": cover_id, "cover_url": cover_url, "normal_thumbnail": normal_thumbnail}},
         upsert=True,
     )
 
@@ -806,9 +771,6 @@ async def refresh_user_top_played_cache(*, user_id: int, limit: int = 500, refre
         "cover_id": cover_id,
         "cover_url": cover_url,
         "normal_thumbnail": normal_thumbnail,
-        "thumbnail_url": new_thumbnail_url,
-        "thumbnail_hash": new_thumbnail_hash,
-        "thumbnail_covers": new_thumbnail_covers,
     }
 
 
