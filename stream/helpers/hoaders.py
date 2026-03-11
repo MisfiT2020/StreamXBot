@@ -180,16 +180,24 @@ async def hoaders_search(*, artist: str, album: str, country: str = "in", source
     return covers, status
 
 
-async def hoaders_big_cover_url(*, artist: str, album: str, year: int | None = None, country: str = "in", sources: list[str] | None = None) -> str | None:
+async def hoaders_cover_info(*, artist: str, album: str, year: int | None = None, country: str = "in", sources: list[str] | None = None) -> tuple[str | None, str | None]:
     covers, status = await hoaders_search(artist=artist, album=album, country=country, sources=sources)
     if not covers:
         _dbg(f"[hoaders] no_covers status={status}")
-        return None
+        return None, None
     best = _select_best_cover(covers=covers, artist=artist, album=album, year=year)
     if not best:
-        return None
-    url = (best.get("bigCoverUrl") or best.get("smallCoverUrl") or "").strip()
-    if url.lower().endswith(".mp4"):
-        return None
-    return url or None
+        return None, None
+    big = (best.get("bigCoverUrl") or best.get("smallCoverUrl") or "").strip()
+    small = (best.get("smallCoverUrl") or best.get("bigCoverUrl") or "").strip()
+    if big.lower().endswith(".mp4"):
+        big = ""
+    if small.lower().endswith(".mp4"):
+        small = ""
+    return big or None, small or None
+
+
+async def hoaders_big_cover_url(*, artist: str, album: str, year: int | None = None, country: str = "in", sources: list[str] | None = None) -> str | None:
+    big, _ = await hoaders_cover_info(artist=artist, album=album, year=year, country=country, sources=sources)
+    return big
 

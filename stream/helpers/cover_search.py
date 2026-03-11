@@ -6,7 +6,7 @@ from urllib.parse import quote
 from aiohttp import ClientSession
 
 from stream.core.config_manager import Config
-from stream.helpers.hoaders import hoaders_big_cover_url
+from stream.helpers.hoaders import hoaders_big_cover_url, hoaders_cover_info
 
 _SPOTIFY_TOKEN: str | None = None
 _SPOTIFY_TOKEN_EXPIRES_AT: float = 0.0
@@ -429,7 +429,7 @@ async def deezer_cover_url(*, title: str, artist: str, album: str = "", year: in
     return None
 
 
-async def find_best_cover_url(*, title: str, artist: str, album: str = "", year: int | None = None) -> tuple[str | None, str | None]:
+async def find_best_cover_url(*, title: str, artist: str, album: str = "", year: int | None = None) -> tuple[str | None, str | None, str | None]:
     use_spotify = bool(getattr(Config, "SPOTIFY_COVER_SEARCH", False))
     use_fallbacks = bool(getattr(Config, "MUSIC_HOADER_SEARCH", False))
 
@@ -442,34 +442,34 @@ async def find_best_cover_url(*, title: str, artist: str, album: str = "", year:
             if (album or "").strip():
                 u = await spotify_album_cover_url(artist=artist, album=album, year=year)
                 if u:
-                    return u, "spotify_album"
+                    return u, "spotify_album", None
             u = await spotify_cover_url(title=title, artist=artist, album=album, year=year)
             if u:
-                return u, "spotify"
+                return u, "spotify", None
         except Exception as e:
             _dbg(f"[cover] spotify failed err={e!r}")
 
     if use_fallbacks:
         try:
             name = (album or "").strip() or (title or "").strip()
-            u = await hoaders_big_cover_url(artist=artist, album=name, year=year)
-            if u:
-                return u, "hoaders"
+            big, small = await hoaders_cover_info(artist=artist, album=name, year=year)
+            if big:
+                return big, "hoaders", small
         except Exception as e:
             _dbg(f"[cover] hoaders failed err={e!r}")
 
         try:
             u = await apple_cover_url(title=title, artist=artist, album=album, year=year)
             if u:
-                return u, "apple"
+                return u, "apple", None
         except Exception as e:
             _dbg(f"[cover] apple failed err={e!r}")
 
         try:
             u = await deezer_cover_url(title=title, artist=artist, album=album, year=year)
             if u:
-                return u, "deezer"
+                return u, "deezer", None
         except Exception as e:
             _dbg(f"[cover] deezer failed err={e!r}")
 
-    return None, None
+    return None, None, None

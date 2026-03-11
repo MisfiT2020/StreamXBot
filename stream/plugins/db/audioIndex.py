@@ -328,8 +328,9 @@ async def _enrich_audio_doc(message: Message, media):
         )
     )
 
+    small_cover_url = None
     try:
-        origin_cover_url, cover_source = await find_best_cover_url(
+        origin_cover_url, cover_source, small_cover_url = await find_best_cover_url(
             title=title,
             artist=performer,
             album=album,
@@ -337,6 +338,7 @@ async def _enrich_audio_doc(message: Message, media):
         )
     except Exception as e:
         LOG.warning(f"Cover lookup failed chat={message.chat.id} msg={message.id}: {e}")
+        origin_cover_url, cover_source, small_cover_url = None, None, None
 
     if origin_cover_url:
         cover_url = str(origin_cover_url).strip()
@@ -345,6 +347,8 @@ async def _enrich_audio_doc(message: Message, media):
         _dbg(f"[cover] found track={title!r} artist={performer!r} src={cover_source!r} url={origin_cover_url!r}")
 
     spotify = {"cover_url": cover_url, "cover_source": cover_source}
+    if small_cover_url:
+        spotify["smallCoverUrl"] = small_cover_url
     try:
         sp_track = await spotify_best_track(
             title=title,
