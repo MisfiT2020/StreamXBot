@@ -184,14 +184,15 @@ async def _fetch_user_token(*, force_refresh: bool = False) -> str | None:
 
 
 async def fetch_track_lyrics_from_musixmatch(*, track: dict) -> dict:
+    audio = track.get("audio") if isinstance(track.get("audio"), dict) else {}
+    telegram = track.get("telegram") if isinstance(track.get("telegram"), dict) else {}
+    title = (audio.get("title") or "").strip() or (telegram.get("title") or "").strip()
+    artist = (audio.get("artist") or "").strip() or (audio.get("performer") or "").strip() or (telegram.get("artist") or "").strip()
+    album = (audio.get("album") or "").strip() or (telegram.get("album") or "").strip()
+    year = audio.get("year")
+
     spotify_track_id = _pick_spotify_track_id(track)
     if not spotify_track_id:
-        audio = track.get("audio") if isinstance(track.get("audio"), dict) else {}
-        telegram = track.get("telegram") if isinstance(track.get("telegram"), dict) else {}
-        title = (audio.get("title") or "").strip() or (telegram.get("title") or "").strip()
-        artist = (audio.get("artist") or "").strip() or (audio.get("performer") or "").strip() or (telegram.get("artist") or "").strip()
-        album = (audio.get("album") or "").strip() or (telegram.get("album") or "").strip()
-        year = audio.get("year")
         try:
             from stream.helpers.cover_search import spotify_best_track
 
@@ -210,9 +211,6 @@ async def fetch_track_lyrics_from_musixmatch(*, track: dict) -> dict:
                     spotify["url"] = spotify_url
                 track["spotify"] = spotify
 
-        if not spotify_track_id:
-            return {"ok": False, "error": "missing_spotify_track_id"}
-
     token = await _fetch_user_token(force_refresh=False)
     if not token:
         return {"ok": False, "error": "token_failed"}
@@ -221,8 +219,15 @@ async def fetch_track_lyrics_from_musixmatch(*, track: dict) -> dict:
         "usertoken": token,
         "app_id": _APP_ID,
         "subtitle_format": "mxm",
-        "track_spotify_id": spotify_track_id,
     }
+    
+    if spotify_track_id:
+        params["track_spotify_id"] = spotify_track_id
+    elif title and artist:
+        params["q_track"] = title
+        params["q_artist"] = artist
+    else:
+        return {"ok": False, "error": "missing_spotify_track_id_and_metadata"}
 
     async def _call() -> tuple[int, Any]:
         return await asyncio.to_thread(

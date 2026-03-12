@@ -347,8 +347,11 @@ async def _enrich_audio_doc(message: Message, media):
         _dbg(f"[cover] found track={title!r} artist={performer!r} src={cover_source!r} url={origin_cover_url!r}")
 
     spotify = {"cover_url": cover_url, "cover_source": cover_source}
-    if small_cover_url:
-        spotify["smallCoverUrl"] = small_cover_url
+    if cover_source == "hoaders" and small_cover_url:
+        spotify["cover_url"] = small_cover_url
+        spotify["big_cover_url"] = cover_url
+    elif small_cover_url:
+        spotify["small_cover_url"] = small_cover_url
     try:
         sp_track = await spotify_best_track(
             title=title,
@@ -424,49 +427,39 @@ async def _enrich_audio_doc(message: Message, media):
     if not duplicate and fingerprint:
         duplicate = await col.find_document({"fingerprint": fingerprint}, projection={"_id": 1})
 
-    if duplicate and duplicate.get("_id") != file_unique_id:
-        ensure_source = {}
-        existing = await col.read_document(
-            duplicate["_id"],
-            projection={"_id": 1, "source_chat_id": 1, "source_message_id": 1},
-        )
-        if not existing or existing.get("source_chat_id") is None or existing.get("source_message_id") is None:
-            ensure_source = {"source_chat_id": message.chat.id, "source_message_id": message.id}
-
-        await col.update_one(
-            {"_id": duplicate["_id"]},
-            {"$set": {**{k: v for k, v in payload.items() if v is not None}, **ensure_source}},
-            upsert=True,
-        )
-        try:
-            await col.delete_document(file_unique_id)
-        except Exception:
-            pass
-        return
+    target_id = duplicate["_id"] if (duplicate and duplicate.get("_id")) else file_unique_id
 
     ensure_source = {}
     existing = await col.read_document(
-        file_unique_id,
+        target_id,
         projection={"_id": 1, "source_chat_id": 1, "source_message_id": 1},
     )
     if not existing or existing.get("source_chat_id") is None or existing.get("source_message_id") is None:
         ensure_source = {"source_chat_id": message.chat.id, "source_message_id": message.id}
 
     await col.update_one(
-        {"_id": file_unique_id},
+        {"_id": target_id},
         {
             "$set": {**{k: v for k, v in payload.items() if v is not None}, **ensure_source},
         },
         upsert=True,
     )
+
+    if target_id != file_unique_id:
+        try:
+            await col.delete_document(file_unique_id)
+        except Exception:
+            pass
+
     if bool(getattr(Config, "DEBUG", False)):
-        LOG.debug(f"[mongo] upserted audio doc _id={file_unique_id!r}")
+        LOG.debug(f"[mongo] upserted audio doc _id={target_id!r}")
+
     try:
         lyrics_enabled = bool(getattr(Config, "MUSIXMATCH", False)) or bool(getattr(Config, "LRCLIB", True))
         if lyrics_enabled:
             existing2 = None
             try:
-                existing2 = await col.read_document(file_unique_id, projection={"lyrics": 1})
+                existing2 = await col.read_document(target_id, projection={"lyrics": 1})
             except Exception:
                 existing2 = None
             existing_lyrics = (existing2 or {}).get("lyrics")
@@ -474,11 +467,11 @@ async def _enrich_audio_doc(message: Message, media):
             if not has_lyrics:
                 from Api.services.lyrics_service import get_track_lyrics
 
-                await get_track_lyrics(file_unique_id)
-    except Exception:
-        pass
+                await get_track_lyrics(target_id)
+    except Exception as e:
+        LOG.error(f"[index] lyrics fetch failed for {target_id!r}: {e}", exc_info=True)
     if bool(getattr(Config, "DEBUG", False)):
-        LOG.debug(f"[index] done file_unique_id={file_unique_id!r}")
+        LOG.debug(f"[index] done file_unique_id={file_unique_id!r} target_id={target_id!r}")
 
 
 @bot.on_message(filters.chat(Config.CHANNEL_ID) & (filters.audio | filters.document))

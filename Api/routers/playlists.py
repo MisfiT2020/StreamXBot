@@ -12,7 +12,6 @@ from Api.schemas.playlists import (
     PlaylistsResponse,
 )
 from Api.services.genColor import ensure_user_playlist_cover, ensure_user_playlist_normal_cover
-from Api.services.playlist_thumbnail import ensure_playlist_thumbnail
 from Api.services.track_service import get_track_by_id, get_tracks_by_ids
 from Api.utils.auth import require_user_id
 from stream.database.MongoDb import db_handler
