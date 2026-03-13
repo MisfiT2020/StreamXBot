@@ -1,5 +1,15 @@
 # syntax=docker/dockerfile:1.2
 
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app/StreamXWeb
+
+COPY StreamXWeb/package*.json ./
+RUN npm install
+COPY StreamXWeb/ .
+
+RUN npm run build
+
 FROM python:3.12-slim-bullseye
 
 RUN apt-get update && \
@@ -15,6 +25,8 @@ RUN apt-get update && \
       gnupg \
       aria2 \
       mediainfo \
+      ffmpeg \
+      libavcodec-extra \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,6 +39,8 @@ RUN /app/streamvenv/bin/pip install --no-cache-dir --upgrade pip setuptools whee
     /app/streamvenv/bin/pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+COPY --from=frontend-builder /app/StreamXWeb/dist ./dist
 
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh

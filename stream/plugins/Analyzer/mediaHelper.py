@@ -136,12 +136,39 @@ def _parse_mediainfo(output: str) -> dict[str, dict[str, str]]:
     return sections
 
 
+def _is_junk_title(title: str) -> bool:
+    t = (title or "").strip().casefold()
+    if not t:
+        return True
+    junk = {
+        "core media audio",
+        "mpeg audio",
+        "iso media file produced by google inc.",
+        "lavf",
+    }
+    for j in junk:
+        if j in t:
+            return True
+    return False
+
+
+def _pick_best_title(general: dict, audio: dict) -> str:
+    t1 = (general.get("title") or "").strip()
+    t2 = (audio.get("title") or "").strip()
+
+    if t1 and not _is_junk_title(t1):
+        return t1
+    if t2 and not _is_junk_title(t2):
+        return t2
+    return t1 or t2 or ""
+
+
 def extract_audio_metadata(output: str) -> dict[str, str]:
     sections = _parse_mediainfo(output)
     general = sections.get("general", {})
     audio = sections.get("audio", {})
 
-    title = general.get("title") or audio.get("title") or ""
+    title = _pick_best_title(general, audio)
     duration = general.get("duration") or audio.get("duration") or ""
     file_type = audio.get("format") or general.get("format") or ""
     compression = audio.get("compression mode") or general.get("compression mode") or ""
@@ -291,7 +318,7 @@ def extract_audio_metadata_normalized(output: str, duration_sec: int | None = No
     general = sections.get("general", {})
     audio = sections.get("audio", {})
 
-    title = general.get("title") or audio.get("title") or ""
+    title = _pick_best_title(general, audio)
     album = general.get("album") or ""
     artist = general.get("performer") or general.get("album/performer") or ""
     composer = general.get("composer") or ""

@@ -23,3 +23,12 @@ class SetCookieRequest(BaseModel):
 
 class FCMTokenRequest(BaseModel):
     fcm_token: str
+
+class RegisterRequest(BaseModel):
+    userid: int
+    username: str
+    password: str
+
+class ValidateOTPRequest(BaseModel):
+    userid: int
+    otp: str

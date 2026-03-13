@@ -19,6 +19,7 @@ from stream.plugins.Analyzer.mediaHelper import (
     infer_artist_title,
     run_mediainfo,
     sanitize_filename,
+    _is_junk_title,
 )
 from stream.helpers.cover_search import find_best_cover_url, spotify_best_track
 
@@ -158,17 +159,6 @@ def _coerce_int(value):
         return int(value)
     except Exception:
         return None
-
-
-def _is_junk_title(title: str) -> bool:
-    t = (title or "").strip().casefold()
-    if not t:
-        return True
-    if t == "core media audio":
-        return True
-    if t == "mpeg audio":
-        return True
-    return False
 
 
 def _best_title_artist_album(*, audio_doc: dict, media, inferred_title: str, inferred_artist: str) -> tuple[str, str, str]:

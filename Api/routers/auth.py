@@ -4,11 +4,20 @@ import hmac
 import os
 import re
 import time
+import random
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from Api.routers.webapp import extract_telegram_user
-from Api.schemas.auth import PasswordLoginRequest, SetCookieRequest, SetCredentialsRequest, TgLoginRequest, FCMTokenRequest
+from Api.schemas.auth import (
+    PasswordLoginRequest,
+    SetCookieRequest,
+    SetCredentialsRequest,
+    TgLoginRequest,
+    FCMTokenRequest,
+    RegisterRequest,
+    ValidateOTPRequest,
+)
 from Api.utils.auth import create_auth_token, require_user_id, verify_auth_token
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
@@ -275,3 +284,94 @@ async def update_fcm_token(payload: FCMTokenRequest, user_id: int = Depends(requ
         upsert=True,
     )
     return {"ok": True}
+
+@router.post("/register")
+async def register_account(payload: RegisterRequest):
+    from stream import bot
+    if not bot:
+        raise HTTPException(status_code=500, detail="Bot is not running or ONLY_API is true")
+
+    canon = _canon_username(payload.username)
+    if not canon:
+        raise HTTPException(status_code=400, detail="invalid username")
+
+    col = db_handler.get_collection("users").collection
+    existing_user = await col.find_one({"_id": payload.userid})
+    if existing_user and existing_user.get("password"):
+        raise HTTPException(status_code=409, detail="User already registered")
+
+    existing_username = await col.find_one({"username": canon, "_id": {"$ne": payload.userid}}, {"_id": 1})
+    if existing_username:
+        raise HTTPException(status_code=409, detail="username already taken")
+
+    otp = str(random.randint(100000, 999999))
+    now = time.time()
+    otp_col = db_handler.get_collection("registration_otps").collection
+    
+    await otp_col.update_one(
+        {"_id": payload.userid},
+        {
+            "$set": {
+                "otp": otp,
+                "username": canon,
+                "password": _hash_password(payload.password),
+                "created_at": now
+            }
+        },
+        upsert=True
+    )
+    
+    try:
+        await bot.send_message(
+            chat_id=payload.userid,
+            text=f"Your StreamX registration OTP is: `{otp}`\n\nThis OTP is valid for registration."
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to send OTP to {payload.userid}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send OTP via Telegram bot. Have you started the bot?")
+
+    return {"ok": True, "message": "OTP sent"}
+
+@router.post("/validate")
+async def validate_account(
+    payload: ValidateOTPRequest,
+    response: Response,
+    set_cookie: bool = Query(default=False),
+):
+    otp_col = db_handler.get_collection("registration_otps").collection
+    doc = await otp_col.find_one({"_id": payload.userid})
+    if not doc:
+        raise HTTPException(status_code=400, detail="No pending registration found")
+
+    if doc.get("otp") != payload.otp:
+        raise HTTPException(status_code=401, detail="Invalid OTP")
+
+    now = time.time()
+    col = db_handler.get_collection("users").collection
+
+    updates = {
+        "username": doc["username"],
+        "password": doc["password"],
+        "username_updated_at": now,
+        "password_updated_at": now,
+        "updated_at": now,
+    }
+    set_on_insert = {
+        "created_at": now,
+        "telegram": {"id": payload.userid}
+    }
+
+    await col.update_one(
+        {"_id": payload.userid},
+        {"$set": updates, "$setOnInsert": set_on_insert},
+        upsert=True
+    )
+
+    await otp_col.delete_one({"_id": payload.userid})
+
+    token = create_auth_token(user_id=payload.userid)
+    if set_cookie:
+        _set_auth_cookie(response=response, token=token)
+        
+    return {"ok": True, "user_id": payload.userid, "token": token}

@@ -2,7 +2,6 @@ import base64
 import os
 import sys
 
-# Add project root to path so we can import config
 sys.path.append(os.path.dirname(__file__))
 
 try:
@@ -24,10 +23,8 @@ def encode_file(file_path):
         print("SECRET_KEY is empty in config.py")
         sys.exit(1)
         
-    # XOR Encrypt the data with the SECRET_KEY from config
     encrypted = bytes(a ^ b for a, b in zip(data, (key * (len(data) // len(key) + 1))[:len(data)]))
     
-    # Encode to base64 for easy copying
     b64 = base64.b64encode(encrypted).decode('utf-8')
     
     print("\n=== SUCCESS ===")
