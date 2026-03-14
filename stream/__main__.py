@@ -15,7 +15,7 @@ except Exception:
     idle = None
 from uvicorn import Config as UvicornConfig, Server as UvicornServer
 
-from . import bot, scheduler, add_daily_playlist_jobs, add_user_profile_refresh_jobs
+from . import bot, scheduler, add_daily_playlist_jobs, add_user_profile_refresh_jobs, add_deleted_track_reconcile_jobs
 from stream.plugins.dev.updater import restart_notification
 from .database.MongoDb import db_handler
 from .helpers.logger import LOGGER
@@ -101,6 +101,7 @@ async def main():
         try:
             add_daily_playlist_jobs(log)
             add_user_profile_refresh_jobs(log)
+            add_deleted_track_reconcile_jobs(log)
             if not bool(getattr(scheduler, "running", False)):
                 scheduler.start()
         except Exception as e:

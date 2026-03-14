@@ -9,7 +9,7 @@ from collections import deque
 from typing import AsyncIterator, Optional
 
 from fastapi import HTTPException, Request
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 from Api.deps.db import get_audio_tracks_collection
 from Api.utils.auth import verify_auth_token
@@ -688,6 +688,10 @@ def _extract_media_file_id(message) -> str | None:
     return str(fid)
 
 
+def _message_has_downloadable_media(message) -> bool:
+    return bool(_extract_media_file_id(message))
+
+
 async def _get_lock(key: str) -> asyncio.Lock:
     async with _FILE_ID_LOCKS_LOCK:
         lock = _FILE_ID_LOCKS.get(key)
@@ -870,7 +874,7 @@ async def _stream_range(
             if source_chat_id is not None and source_message_id is not None:
                 try:
                     msg = await client.get_messages(int(source_chat_id), int(source_message_id))
-                    if msg:
+                    if msg and _message_has_downloadable_media(msg):
                         target = msg
                 except Exception:
                     pass
@@ -949,7 +953,7 @@ async def _direct_stream(
             if source_chat_id is not None and source_message_id is not None:
                 try:
                     msg = await client.get_messages(int(source_chat_id), int(source_message_id))
-                    if msg:
+                    if msg and _message_has_downloadable_media(msg):
                         target = msg
                 except Exception:
                     pass
@@ -990,10 +994,12 @@ async def stream_track(track_id: str, request: Request):
     col = get_audio_tracks_collection()
     doc = await col.find_one(
         {"_id": track_id},
-        projection={"telegram": 1, "audio": 1, "source_chat_id": 1, "source_message_id": 1},
+        projection={"telegram": 1, "audio": 1, "source_chat_id": 1, "source_message_id": 1, "deleted": 1},
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Track not found")
+    if bool(doc.get("deleted")):
+        raise HTTPException(status_code=404, detail="Track deleted")
 
     telegram = doc.get("telegram") or {}
     audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
@@ -1026,6 +1032,8 @@ async def stream_track(track_id: str, request: Request):
                 file_size = int(doc.get("file_size"))
         except Exception:
             file_size = None
+    if file_size is not None and int(file_size) <= 0:
+        file_size = None
 
     duration_sec: float | None = None
     try:
@@ -1064,9 +1072,14 @@ async def stream_track(track_id: str, request: Request):
     headers = {"Accept-Ranges": "bytes"}
     if status_code == 206 and file_size is not None and until_bytes is not None:
         headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
-        headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
+        if (request.method or "").upper() == "HEAD":
+            headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
     elif file_size is not None:
-        headers["Content-Length"] = str(file_size)
+        if (request.method or "").upper() == "HEAD":
+            headers["Content-Length"] = str(file_size)
+
+    if (request.method or "").upper() == "HEAD":
+        return Response(content=b"", status_code=status_code, headers=headers, media_type=mime_type)
 
     file_ids_for_pick = telegram.get("file_ids") if isinstance(telegram.get("file_ids"), dict) else {}
     preferred_user_ids: list[int] = []
@@ -1182,10 +1195,12 @@ async def download_track(track_id: str, request: Request):
     col = get_audio_tracks_collection()
     doc = await col.find_one(
         {"_id": track_id},
-        projection={"telegram": 1, "audio": 1, "file_size": 1, "source_chat_id": 1, "source_message_id": 1},
+        projection={"telegram": 1, "audio": 1, "file_size": 1, "source_chat_id": 1, "source_message_id": 1, "deleted": 1},
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Track not found")
+    if bool(doc.get("deleted")):
+        raise HTTPException(status_code=404, detail="Track deleted")
 
     telegram = doc.get("telegram") or {}
     audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
@@ -1219,6 +1234,8 @@ async def download_track(track_id: str, request: Request):
                 file_size = int(doc.get("file_size"))
         except Exception:
             file_size = None
+    if file_size is not None and int(file_size) <= 0:
+        file_size = None
 
     mime_type = (telegram.get("mime_type") or "audio/mpeg").strip() or "audio/mpeg"
     filename = _build_download_filename(track_id=track_id, audio=audio, telegram=telegram, mime_type=mime_type)
@@ -1250,9 +1267,11 @@ async def download_track(track_id: str, request: Request):
 
     if status_code == 206 and file_size is not None and until_bytes is not None:
         headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
-        headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
+        if (request.method or "").upper() == "HEAD":
+            headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
     elif file_size is not None:
-        headers["Content-Length"] = str(file_size)
+        if (request.method or "").upper() == "HEAD":
+            headers["Content-Length"] = str(file_size)
 
     file_ids_for_pick = telegram.get("file_ids") if isinstance(telegram.get("file_ids"), dict) else {}
     preferred_user_ids: list[int] = []

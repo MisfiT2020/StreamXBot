@@ -83,7 +83,7 @@ async def browse_tracks(channel_id: Optional[int], page: int, per_page: int) -> 
     skip = (page - 1) * per_page
 
     col = get_audio_tracks_collection()
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = {"deleted": {"$ne": True}}
     if channel_id is not None:
         query["source_chat_id"] = int(channel_id)
 
@@ -124,12 +124,13 @@ async def search_tracks(q: str, *, channel_id: Optional[int], page: int, per_pag
 
     col = get_audio_tracks_collection()
     query: dict[str, Any] = {
+        "deleted": {"$ne": True},
         "$or": [
             {"audio.title": {"$regex": pattern, "$options": "i"}},
             {"audio.artist": {"$regex": pattern, "$options": "i"}},
             {"audio.performer": {"$regex": pattern, "$options": "i"}},
             {"audio.album": {"$regex": pattern, "$options": "i"}},
-        ]
+        ],
     }
     if channel_id is not None:
         query["source_chat_id"] = int(channel_id)
@@ -159,7 +160,7 @@ async def random_tracks(*, limit: int, seed: int | None = None, channel_id: Opti
     if limit > 200:
         limit = 200
 
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = {"deleted": {"$ne": True}}
     if channel_id is not None:
         query["source_chat_id"] = int(channel_id)
 
@@ -225,7 +226,7 @@ async def get_browse_items_by_ids(track_ids: list[str]) -> list[BrowseItem]:
         "spotify": 1,
         "updated_at": 1,
     }
-    cursor = col.find({"_id": {"$in": ids}}, projection)
+    cursor = col.find({"_id": {"$in": ids}, "deleted": {"$ne": True}}, projection)
     docs: list[dict] = []
     async for doc in cursor:
         docs.append(doc)
@@ -899,7 +900,7 @@ async def rebuild_global_playback_from_userplayback(*, batch_size: int = 1000) -
 
     if processed == 0:
         audio_col = get_audio_tracks_collection()
-        cursor = audio_col.find({}, {"_id": 1}).limit(500)
+        cursor = audio_col.find({"deleted": {"$ne": True}}, {"_id": 1}).limit(500)
         rank = 500
         async for doc in cursor:
             tid = str(doc.get("_id") or "").strip()
@@ -996,7 +997,7 @@ async def user_top_played_tracks(*, user_id: int, page: int, per_page: int) -> B
 
 async def get_track_by_id(track_id: str) -> dict | None:
     col = get_audio_tracks_collection()
-    doc = await col.find_one({"_id": track_id})
+    doc = await col.find_one({"_id": track_id, "deleted": {"$ne": True}})
     if not doc:
         return None
     if "_id" in doc:
@@ -1075,7 +1076,7 @@ async def get_tracks_by_ids(track_ids: list[str]) -> list[dict]:
         "fingerprint": 1,
         "updated_at": 1,
     }
-    cursor = col.find({"_id": {"$in": ids}}, projection)
+    cursor = col.find({"_id": {"$in": ids}, "deleted": {"$ne": True}}, projection)
     docs: list[dict] = []
     async for doc in cursor:
         if "_id" in doc:

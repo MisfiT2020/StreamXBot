@@ -181,6 +181,71 @@ async def refresh_user_profiles(*, limit_users: int = 2000) -> dict[str, int | b
     return {"ok": True, "scanned": scanned, "updated": updated, "failed": failed}
 
 
+async def reconcile_deleted_tracks(*, limit_tracks: int = 500) -> dict[str, int | bool | str]:
+    if bot is None:
+        return {"ok": False, "skipped": True, "reason": "bot disabled"}
+
+    from stream.database.MongoDb import db_handler
+
+    now = time.time()
+    col = db_handler.audio_collection.collection
+
+    cursor = (
+        col.find(
+            {
+                "deleted": {"$ne": True},
+                "source_chat_id": {"$exists": True},
+                "source_message_id": {"$exists": True},
+            },
+            {"_id": 1, "source_chat_id": 1, "source_message_id": 1},
+        )
+        .sort([("updated_at", -1)])
+        .limit(int(limit_tracks))
+    )
+
+    scanned = 0
+    marked = 0
+    failed = 0
+
+    async for doc in cursor:
+        scanned += 1
+        try:
+            chat_id = int(doc.get("source_chat_id") or 0)
+            message_id = int(doc.get("source_message_id") or 0)
+        except Exception:
+            continue
+        if chat_id == 0 or message_id <= 0:
+            continue
+
+        ok = False
+        try:
+            msg = await bot.get_messages(chat_id, message_id)
+            media = getattr(msg, "audio", None) or getattr(msg, "document", None)
+            ok = bool(media)
+        except Exception as e:
+            msg_str = str(e).upper()
+            if "MESSAGE_ID_INVALID" in msg_str or "MSG_ID_INVALID" in msg_str or "MESSAGE_NOT_FOUND" in msg_str:
+                ok = False
+            else:
+                failed += 1
+                continue
+
+        if ok:
+            continue
+
+        try:
+            await col.update_one(
+                {"_id": doc.get("_id")},
+                {"$set": {"deleted": True, "deleted_at": now, "updated_at": now}},
+            )
+            marked += 1
+        except Exception:
+            failed += 1
+            continue
+
+    return {"ok": True, "scanned": scanned, "marked": marked, "failed": failed}
+
+
 def add_daily_playlist_jobs(log=None) -> None:
     log = log or LOGGER(__name__)
     if scheduler is None or CronTrigger is None:
@@ -212,6 +277,23 @@ def add_user_profile_refresh_jobs(log=None) -> None:
         misfire_grace_time=300,
         max_instances=1,
         next_run_time=datetime.datetime.utcnow() + datetime.timedelta(seconds=60),
+        replace_existing=True,
+    )
+
+
+def add_deleted_track_reconcile_jobs(log=None) -> None:
+    log = log or LOGGER(__name__)
+    if scheduler is None or CronTrigger is None:
+        log.info("Deleted track reconcile scheduler disabled (missing scheduler)")
+        return
+    scheduler.add_job(
+        reconcile_deleted_tracks,
+        trigger=CronTrigger(hour="*/6", minute=5, timezone="UTC"),
+        id="tracks_deleted_reconcile",
+        name="Tracks Deleted Reconcile",
+        misfire_grace_time=300,
+        max_instances=1,
+        next_run_time=datetime.datetime.utcnow() + datetime.timedelta(seconds=90),
         replace_existing=True,
     )
 

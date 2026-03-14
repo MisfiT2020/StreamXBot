@@ -511,3 +511,91 @@ async def channel_audio_filter(_, message: Message):
             f"channel_audio_filter failed chat={message.chat.id} msg={message.id}: {e}",
             exc_info=True,
         )
+
+
+@bot.on_deleted_messages(group=4)
+async def deleted_messages_handler(_, messages):
+    try:
+        now = time.time()
+        pairs: list[tuple[int, int]] = []
+        for m in messages or []:
+            chat = getattr(m, "chat", None)
+            chat_id = getattr(chat, "id", None) if chat is not None else getattr(m, "chat_id", None)
+            msg_id = getattr(m, "id", None)
+            if msg_id is None:
+                msg_id = getattr(m, "message_id", None)
+            try:
+                chat_id = int(chat_id) if chat_id is not None else None
+                msg_id = int(msg_id) if msg_id is not None else None
+            except Exception:
+                chat_id = None
+                msg_id = None
+            if chat_id is None or msg_id is None:
+                continue
+            pairs.append((chat_id, msg_id))
+
+        if not pairs:
+            return
+
+        res = await db_handler.audio_collection.collection.update_many(
+            {"$or": [{"source_chat_id": cid, "source_message_id": mid} for (cid, mid) in pairs]},
+            {"$set": {"deleted": True, "deleted_at": now, "updated_at": now}},
+        )
+        if bool(getattr(Config, "DEBUG", False)):
+            try:
+                LOG.debug(
+                    f"deleted_messages_handler marked deleted count={len(pairs)} matched={int(getattr(res, 'matched_count', 0) or 0)} "
+                    f"modified={int(getattr(res, 'modified_count', 0) or 0)}"
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        LOG.warning(f"deleted_messages_handler failed: {e}", exc_info=True)
+
+
+@bot.on_raw_update(group=4)
+async def deleted_messages_raw_handler(_, update, __, ___):
+    try:
+        from pyrogram.raw.types import UpdateDeleteChannelMessages
+    except Exception:
+        return
+
+    if not isinstance(update, UpdateDeleteChannelMessages):
+        return
+
+    try:
+        channel_id = int(getattr(update, "channel_id", 0) or 0)
+    except Exception:
+        channel_id = 0
+    if channel_id <= 0:
+        return
+
+    msg_ids = getattr(update, "messages", None) or []
+    ids: list[int] = []
+    for x in msg_ids:
+        try:
+            ids.append(int(x))
+        except Exception:
+            continue
+    if not ids:
+        return
+
+    chat_id = -1000000000000 - int(channel_id)
+    now = time.time()
+    try:
+        res = await db_handler.audio_collection.collection.update_many(
+            {"source_chat_id": int(chat_id), "source_message_id": {"$in": ids}},
+            {"$set": {"deleted": True, "deleted_at": now, "updated_at": now}},
+        )
+    except Exception as e:
+        LOG.warning(f"deleted_messages_raw_handler mongo update failed: {e}", exc_info=True)
+        return
+
+    if bool(getattr(Config, "DEBUG", False)):
+        try:
+            LOG.debug(
+                f"deleted_messages_raw_handler chat={chat_id} ids={len(ids)} matched={int(getattr(res, 'matched_count', 0) or 0)} "
+                f"modified={int(getattr(res, 'modified_count', 0) or 0)}"
+            )
+        except Exception:
+            pass
