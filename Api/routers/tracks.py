@@ -1,8 +1,9 @@
 import datetime
 import time
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
 from Api.deps.db import get_audio_tracks_collection
 from Api.schemas.browse import BrowseResponse
@@ -18,10 +19,32 @@ from Api.services.track_service import (
     random_tracks,
     search_tracks,
 )
-from Api.utils.auth import verify_auth_token
+from Api.utils.auth import require_user_id, verify_auth_token
+from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 
 router = APIRouter()
+
+def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
+    uid = int(user_id)
+    owners = getattr(Config, "OWNER_ID", None) or []
+    sudos = getattr(Config, "SUDO_USERS", None) or []
+    allow: set[int] = set()
+    for v in (owners or []):
+        try:
+            allow.add(int(v))
+        except Exception:
+            pass
+    for v in (sudos or []):
+        try:
+            allow.add(int(v))
+        except Exception:
+            pass
+    if not allow:
+        raise HTTPException(status_code=403, detail="admin access not configured")
+    if uid not in allow:
+        raise HTTPException(status_code=403, detail="admin only")
+    return uid
 
 def _optional_user_id(request: Request) -> int | None:
     token = ""
@@ -223,6 +246,47 @@ async def track_details(track_id: str):
     if not doc:
         raise HTTPException(status_code=404, detail="track not found")
     return doc
+
+
+class AdminDeleteTracksRequest(BaseModel):
+    track_id: str | list[str] | None = None
+    track_ids: list[str] | None = None
+
+
+@router.post("/admin/tracks/delete")
+async def admin_delete_tracks(payload: AdminDeleteTracksRequest, admin_user_id: int = Depends(require_admin_user_id)):
+    t_ids: list[str] = []
+    if isinstance(payload.track_id, list):
+        t_ids.extend(payload.track_id)
+    elif payload.track_id:
+        t_ids.append(payload.track_id)
+    if payload.track_ids:
+        t_ids.extend(payload.track_ids)
+
+    track_ids: list[str] = []
+    seen: set[str] = set()
+    for tid in t_ids:
+        tid_str = str(tid or "").strip()
+        if not tid_str or tid_str in seen:
+            continue
+        seen.add(tid_str)
+        track_ids.append(tid_str)
+
+    if not track_ids:
+        raise HTTPException(status_code=400, detail="track_id or track_ids is required")
+
+    now = time.time()
+    col = get_audio_tracks_collection()
+    res = await col.update_many(
+        {"_id": {"$in": track_ids}},
+        {"$set": {"deleted": True, "deleted_at": now, "deleted_by": int(admin_user_id), "updated_at": now}},
+    )
+    return {
+        "ok": True,
+        "track_ids": track_ids,
+        "matched": int(getattr(res, "matched_count", 0) or 0),
+        "modified": int(getattr(res, "modified_count", 0) or 0),
+    }
 
 @router.get("/tracks/{track_id}/stream")
 async def track_stream(track_id: str, request: Request):
