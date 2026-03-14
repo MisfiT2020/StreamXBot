@@ -110,6 +110,77 @@ async def refresh_daily_playlists(date: str | None = None) -> None:
                 continue
 
 
+def _tg_userpic_url(username: str | None) -> str | None:
+    u = (username or "").strip().lstrip("@").strip()
+    if not u:
+        return None
+    if not u.replace("_", "").isalnum():
+        return None
+    if len(u) < 5 or len(u) > 32:
+        return None
+    return f"https://t.me/i/userpic/320/{u}.jpg"
+
+
+async def refresh_user_profiles(*, limit_users: int = 2000) -> dict[str, int | bool | str]:
+    if bot is None:
+        return {"ok": False, "skipped": True, "reason": "bot disabled"}
+
+    from stream.database.MongoDb import db_handler
+
+    now = time.time()
+    cutoff = now - (24 * 60 * 60)
+
+    col = db_handler.get_collection("users").collection
+    cursor = col.find(
+        {"$or": [{"profile_refreshed_at": {"$exists": False}}, {"profile_refreshed_at": {"$lt": cutoff}}]},
+        {"_id": 1},
+    ).limit(int(limit_users))
+
+    scanned = 0
+    updated = 0
+    failed = 0
+
+    async for doc in cursor:
+        scanned += 1
+        try:
+            uid = int(doc.get("_id") or 0)
+        except Exception:
+            uid = 0
+        if uid <= 0:
+            continue
+
+        try:
+            u = await bot.get_users(uid)
+        except Exception:
+            failed += 1
+            continue
+
+        first_name = (getattr(u, "first_name", None) or "").strip() or None
+        tg_username = (getattr(u, "username", None) or "").strip() or None
+        profile_url = _tg_userpic_url(tg_username)
+        photo_url = profile_url
+
+        set_fields: dict[str, object] = {"profile_refreshed_at": now, "updated_at": now}
+        if first_name:
+            set_fields["first_name"] = first_name
+        if tg_username:
+            set_fields["telegram"] = {"id": uid, "username": tg_username}
+        else:
+            set_fields["telegram"] = {"id": uid}
+        if profile_url:
+            set_fields["profile_url"] = profile_url
+            set_fields["photo_url"] = photo_url
+
+        try:
+            await col.update_one({"_id": uid}, {"$set": set_fields}, upsert=True)
+            updated += 1
+        except Exception:
+            failed += 1
+            continue
+
+    return {"ok": True, "scanned": scanned, "updated": updated, "failed": failed}
+
+
 def add_daily_playlist_jobs(log=None) -> None:
     log = log or LOGGER(__name__)
     if scheduler is None or CronTrigger is None:
@@ -124,6 +195,23 @@ def add_daily_playlist_jobs(log=None) -> None:
         misfire_grace_time=300,
         max_instances=1,
         next_run_time=datetime.datetime.utcnow() + datetime.timedelta(seconds=20),
+        replace_existing=True,
+    )
+
+
+def add_user_profile_refresh_jobs(log=None) -> None:
+    log = log or LOGGER(__name__)
+    if scheduler is None or CronTrigger is None:
+        log.info("User profile refresh scheduler disabled (missing scheduler)")
+        return
+    scheduler.add_job(
+        refresh_user_profiles,
+        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id="user_profiles_refresh",
+        name="User Profiles Refresh",
+        misfire_grace_time=300,
+        max_instances=1,
+        next_run_time=datetime.datetime.utcnow() + datetime.timedelta(seconds=60),
         replace_existing=True,
     )
 

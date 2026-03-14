@@ -27,6 +27,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 _USERNAME_RE = re.compile(r"^[a-z0-9_\.]{3,32}$", flags=re.I)
+_TG_USERNAME_RE = re.compile(r"^[a-z0-9_]{5,32}$", flags=re.I)
 
 
 def _canon_username(value: str) -> str:
@@ -37,6 +38,41 @@ def _canon_username(value: str) -> str:
     if not _USERNAME_RE.match(s):
         return ""
     return s
+
+
+def _tg_userpic_url(username: str | None) -> str | None:
+    u = (username or "").strip().lstrip("@").strip()
+    if not u:
+        return None
+    if not _TG_USERNAME_RE.match(u):
+        return None
+    return f"https://t.me/i/userpic/320/{u}.jpg"
+
+
+async def _get_telegram_profile(user_id: int) -> dict[str, str | None]:
+    try:
+        from stream import bot
+    except Exception:
+        bot = None
+
+    if bot is None:
+        return {"first_name": None, "telegram_username": None, "profile_url": None, "photo_url": None}
+
+    try:
+        u = await bot.get_users(int(user_id))
+    except Exception:
+        return {"first_name": None, "telegram_username": None, "profile_url": None, "photo_url": None}
+
+    first_name = (getattr(u, "first_name", None) or "").strip() or None
+    telegram_username = (getattr(u, "username", None) or "").strip() or None
+    photo_url = _tg_userpic_url(telegram_username)
+    profile_url = photo_url
+    return {
+        "first_name": first_name,
+        "telegram_username": telegram_username,
+        "profile_url": profile_url,
+        "photo_url": photo_url,
+    }
 
 
 def _b64e(data: bytes) -> str:
@@ -307,6 +343,7 @@ async def register_account(payload: RegisterRequest):
     otp = str(random.randint(100000, 999999))
     now = time.time()
     otp_col = db_handler.get_collection("registration_otps").collection
+    tg_profile = await _get_telegram_profile(int(payload.userid))
     
     await otp_col.update_one(
         {"_id": payload.userid},
@@ -315,6 +352,10 @@ async def register_account(payload: RegisterRequest):
                 "otp": otp,
                 "username": canon,
                 "password": _hash_password(payload.password),
+                "first_name": tg_profile.get("first_name"),
+                "telegram_username": tg_profile.get("telegram_username"),
+                "profile_url": tg_profile.get("profile_url"),
+                "photo_url": tg_profile.get("photo_url"),
                 "created_at": now
             }
         },
@@ -331,7 +372,15 @@ async def register_account(payload: RegisterRequest):
         logging.getLogger(__name__).error(f"Failed to send OTP to {payload.userid}: {e}")
         raise HTTPException(status_code=500, detail="Failed to send OTP via Telegram bot. Have you started the bot?")
 
-    return {"ok": True, "message": "OTP sent"}
+    return {
+        "ok": True,
+        "message": "OTP sent",
+        "user_id": int(payload.userid),
+        "username": canon,
+        "first_name": tg_profile.get("first_name"),
+        "profile_url": tg_profile.get("profile_url"),
+        "photo_url": tg_profile.get("photo_url"),
+    }
 
 @router.post("/validate")
 async def validate_account(
@@ -349,18 +398,35 @@ async def validate_account(
 
     now = time.time()
     col = db_handler.get_collection("users").collection
+    tg_profile = await _get_telegram_profile(int(payload.userid))
+    first_name = tg_profile.get("first_name") or (doc.get("first_name") if isinstance(doc.get("first_name"), str) else None)
+    telegram_username = tg_profile.get("telegram_username") or (
+        doc.get("telegram_username") if isinstance(doc.get("telegram_username"), str) else None
+    )
+    profile_url = tg_profile.get("profile_url") or (doc.get("profile_url") if isinstance(doc.get("profile_url"), str) else None)
+    photo_url = tg_profile.get("photo_url") or (doc.get("photo_url") if isinstance(doc.get("photo_url"), str) else None)
+    if not profile_url:
+        profile_url = photo_url
+    if not photo_url:
+        photo_url = profile_url
 
     updates = {
         "username": doc["username"],
         "password": doc["password"],
+        "first_name": first_name,
+        "photo_url": photo_url,
+        "profile_url": profile_url,
+        "profile_refreshed_at": now,
         "username_updated_at": now,
         "password_updated_at": now,
         "updated_at": now,
     }
     set_on_insert = {
         "created_at": now,
-        "telegram": {"id": payload.userid}
+        "telegram": {"id": payload.userid, "username": telegram_username}
     }
+    if telegram_username:
+        updates["telegram"] = {"id": payload.userid, "username": telegram_username}
 
     await col.update_one(
         {"_id": payload.userid},
@@ -370,8 +436,16 @@ async def validate_account(
 
     await otp_col.delete_one({"_id": payload.userid})
 
-    token = create_auth_token(user_id=payload.userid)
+    token = create_auth_token(user_id=payload.userid, first_name=first_name, profile_url=profile_url, photo_url=photo_url)
     if set_cookie:
         _set_auth_cookie(response=response, token=token)
         
-    return {"ok": True, "user_id": payload.userid, "token": token}
+    return {
+        "ok": True,
+        "user_id": int(payload.userid),
+        "username": doc.get("username"),
+        "token": token,
+        "first_name": first_name,
+        "profile_url": profile_url,
+        "photo_url": photo_url,
+    }
