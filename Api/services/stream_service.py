@@ -1267,11 +1267,9 @@ async def download_track(track_id: str, request: Request):
 
     if status_code == 206 and file_size is not None and until_bytes is not None:
         headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
-        if (request.method or "").upper() == "HEAD":
-            headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
+        headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
     elif file_size is not None:
-        if (request.method or "").upper() == "HEAD":
-            headers["Content-Length"] = str(file_size)
+        headers["Content-Length"] = str(file_size)
 
     file_ids_for_pick = telegram.get("file_ids") if isinstance(telegram.get("file_ids"), dict) else {}
     preferred_user_ids: list[int] = []
