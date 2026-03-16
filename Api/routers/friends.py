@@ -286,6 +286,16 @@ async def update_settings(payload: SettingsPayload, user_id: int = Depends(requi
         
     return {"ok": True}
 
+
+@router.get("/settings")
+async def get_settings(user_id: int = Depends(require_user_id)):
+    users_col = db_handler.get_collection("users").collection
+    doc = await users_col.find_one({"_id": int(user_id)}, {"settings": 1})
+    settings = doc.get("settings", {}) if isinstance(doc, dict) else {}
+    if not isinstance(settings, dict):
+        settings = {}
+    return {"ok": True, "settings": settings}
+
 @router.post("/fcm_tokens")
 async def add_fcm_token(payload: FcmTokenPayload, user_id: int = Depends(require_user_id)):
     users_col = db_handler.get_collection("users").collection
