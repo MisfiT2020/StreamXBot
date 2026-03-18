@@ -9,6 +9,7 @@ class BrowseItem(BaseModel):
     title: str | None = None
     artist: str | None = None
     album: str | None = None
+    album_id: str | None = None
     duration_sec: int | None = None
     type: str | None = None
     sampling_rate_hz: int | None = None

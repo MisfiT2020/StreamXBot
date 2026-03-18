@@ -54,6 +54,7 @@ def _browse_item_from_doc(doc: dict) -> BrowseItem:
         title=audio.get("title"),
         artist=audio.get("artist"),
         album=audio.get("album"),
+        album_id=audio.get("album_id"),
         duration_sec=audio.get("duration_sec"),
         type=t,
         sampling_rate_hz=audio.get("sampling_rate_hz"),

@@ -1,6 +1,7 @@
 import time
 import asyncio
 import json
+import re
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 
@@ -161,6 +162,44 @@ def _coerce_int(value):
         return None
 
 
+_ARTIST_SPLIT_RE = re.compile(r"\s*(?:,|/|&| and | x | feat\. | feat | ft\. | ft )\s*", flags=re.I)
+_ALBUM_SLUG_RE = re.compile(r"[^a-z0-9]+", flags=re.I)
+
+
+def _split_artists(value: str) -> list[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    raw = raw.replace("(", " ").replace(")", " ").replace("[", " ").replace("]", " ").strip()
+    parts = [p.strip() for p in _ARTIST_SPLIT_RE.split(raw) if p and p.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        key = p.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _slugify(value: str) -> str:
+    s = (value or "").strip().lower()
+    if not s:
+        return ""
+    s = _ALBUM_SLUG_RE.sub("_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+
+def _album_id(*, artist: str, album: str) -> str:
+    a = _slugify(artist)
+    b = _slugify(album)
+    if not a or not b:
+        return ""
+    return f"album_{a}_{b}"
+
+
 def _best_title_artist_album(*, audio_doc: dict, media, inferred_title: str, inferred_artist: str) -> tuple[str, str, str]:
     title = ""
     for cand in (audio_doc.get("title"), getattr(media, "title", ""), inferred_title):
@@ -197,6 +236,7 @@ async def _upsert_minimal(message: Message, media) -> str:
 
     title = (getattr(media, "title", "") or inferred_title or "").strip()
     artist = (getattr(media, "performer", "") or inferred_artist or "").strip()
+    artists = _split_artists(artist) if artist else []
 
     if not title:
         base = ospath.splitext(ospath.basename(file_name))[0].strip()
@@ -211,6 +251,7 @@ async def _upsert_minimal(message: Message, media) -> str:
         "audio": {
             "title": title,
             "artist": artist,
+            "artists": artists if artists else None,
             "duration_sec": duration_sec,
         },
         "source_chat_id": message.chat.id,
@@ -292,8 +333,14 @@ async def _enrich_audio_doc(message: Message, media):
     audio_doc["title"] = title
     if performer:
         audio_doc["artist"] = performer
+        artists = _split_artists(performer)
+        if artists:
+            audio_doc["artists"] = artists
     if album:
         audio_doc["album"] = album
+        aid = _album_id(artist=performer, album=album)
+        if aid:
+            audio_doc["album_id"] = aid
 
     origin_cover_url = None
     cover_url = None

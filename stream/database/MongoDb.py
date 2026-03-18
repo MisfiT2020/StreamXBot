@@ -199,8 +199,30 @@ class MongoDatabase:
         except Exception:
             pass
         try:
+            audio_col = self.audio_collection.collection
+            await audio_col.create_index([("deleted", 1), ("audio.artist", 1)])
+            await audio_col.create_index([("deleted", 1), ("audio.performer", 1)])
+        except Exception:
+            pass
+        try:
+            audio_col = self.audio_collection.collection
+            await audio_col.create_index([("deleted", 1), ("audio.artists", 1)])
+        except Exception:
+            pass
+        try:
+            audio_col = self.audio_collection.collection
+            await audio_col.create_index([("deleted", 1), ("audio.album_id", 1)])
+        except Exception:
+            pass
+        try:
             albums_col = self.get_collection("albums").collection
             await albums_col.create_index([("updated_at", -1)])
+        except Exception:
+            pass
+        try:
+            artists_col = self.get_collection("artists").collection
+            await artists_col.create_index([("updated_at", -1)])
+            await artists_col.create_index([("match_artist", 1)])
         except Exception:
             pass
 

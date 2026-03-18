@@ -95,7 +95,7 @@ def _collage_hash(urls: list[str]) -> str:
 
 import functools
 
-@functools.lru_cache(maxsize=128)
+@functools.lru_cache(maxsize=32)
 def _fetch_image_bytes(url: str) -> bytes | None:
     u = (url or "").strip()
     if not u:
@@ -103,6 +103,8 @@ def _fetch_image_bytes(url: str) -> bytes | None:
     try:
         resp = requests.get(u, timeout=10)
         if resp.status_code == 200 and resp.content:
+            if len(resp.content) > 2_000_000:
+                return None
             return resp.content
     except Exception:
         pass
@@ -114,10 +116,12 @@ def _fetch_image(url: str, *, timeout: int = 10) -> Image.Image | None:
     if not content:
         return None
     try:
-        img = Image.open(BytesIO(content))
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGB")
-        return img
+        with Image.open(BytesIO(content)) as img:
+            if img.mode not in ("RGB", "RGBA"):
+                img2 = img.convert("RGB")
+            else:
+                img2 = img.copy()
+        return img2
     except Exception:
         return None
 
@@ -154,11 +158,21 @@ def _make_blurred_collage(
         y = (i // 2) * cell
         if i < len(srcs):
             im = srcs[i]
-            im = im.convert("RGB") if im.mode != "RGB" else im
-            tile = ImageOps.fit(im, (cell, cell), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+            im2 = im.convert("RGB") if im.mode != "RGB" else im
+            tile = ImageOps.fit(im2, (cell, cell), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
         else:
             tile = Image.new("RGB", (cell, cell), fallback)
         bg.paste(tile, (x, y))
+        try:
+            tile.close()
+        except Exception:
+            pass
+
+    for im in srcs:
+        try:
+            im.close()
+        except Exception:
+            pass
 
     enh = ImageEnhance.Color(bg)
     bg = enh.enhance(1.15)
@@ -259,81 +273,107 @@ def render_cover(
         else:
             base_color = generate_nice_color()
 
-    scale = 4
+    try:
+        scale = int(getattr(Config, "COVER_RENDER_SCALE", 2) or 2)
+    except Exception:
+        scale = 2
+    if scale < 1:
+        scale = 1
+    if scale > 3:
+        scale = 3
     size = int(CARD_SIZE * scale)
     radius = int(CORNER_RADIUS * scale)
 
-    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas: Image.Image | None = None
     card_rgb: Image.Image | None = None
-    if _is_college_enabled() and collage_urls:
-        card_rgb = _make_blurred_collage(
-            urls=collage_urls,
-            size=size,
-            seed_id=seed_id,
-            base_color=base_color,
-            blur_radius=int(70 * scale),
+    card: Image.Image | None = None
+    overlay: Image.Image | None = None
+    depth: Image.Image | None = None
+    mask: Image.Image | None = None
+    out_img: Image.Image | None = None
+    try:
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+        if _is_college_enabled() and collage_urls:
+            card_rgb = _make_blurred_collage(
+                urls=collage_urls,
+                size=size,
+                seed_id=seed_id,
+                base_color=base_color,
+                blur_radius=int(70 * scale),
+            )
+        if card_rgb is None:
+            card = Image.new("RGBA", (size, size), base_color + (255,))
+        else:
+            card = card_rgb.convert("RGBA")
+            overlay = Image.new("RGBA", (size, size), (0, 0, 0, 80))
+            card = Image.alpha_composite(card, overlay)
+
+        depth = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        depth_draw = ImageDraw.Draw(depth)
+        blob_radius = int(320 * scale)
+        blob_x = size - int(170 * scale)
+        blob_y = size - int(160 * scale)
+        depth_draw.ellipse(
+            [blob_x - blob_radius, blob_y - blob_radius, blob_x + blob_radius, blob_y + blob_radius],
+            fill=(0, 0, 0, 160),
         )
-    if card_rgb is None:
-        card = Image.new("RGBA", (size, size), base_color + (255,))
-    else:
-        card = card_rgb.convert("RGBA")
-        overlay = Image.new("RGBA", (size, size), (0, 0, 0, 80))
-        card = Image.alpha_composite(card, overlay)
+        depth = depth.filter(ImageFilter.GaussianBlur(int(140 * scale)))
+        card = Image.alpha_composite(card, depth)
 
-    depth = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    depth_draw = ImageDraw.Draw(depth)
-    blob_radius = int(320 * scale)
-    blob_x = size - int(170 * scale)
-    blob_y = size - int(160 * scale)
-    depth_draw.ellipse(
-        [blob_x - blob_radius, blob_y - blob_radius, blob_x + blob_radius, blob_y + blob_radius],
-        fill=(0, 0, 0, 160),
-    )
-    depth = depth.filter(ImageFilter.GaussianBlur(int(140 * scale)))
-    card = Image.alpha_composite(card, depth)
+        mask = Image.new("L", (size, size), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle([(0, 0), (size, size)], radius=radius, fill=255)
+        canvas.paste(card, (0, 0), mask)
 
-    mask = Image.new("L", (size, size), 0)
-    mask_draw = ImageDraw.Draw(mask)
-    mask_draw.rounded_rectangle([(0, 0), (size, size)], radius=radius, fill=255)
-    canvas.paste(card, (0, 0), mask)
+        draw = ImageDraw.Draw(canvas)
 
-    draw = ImageDraw.Draw(canvas)
+        margin_x = int(50 * scale)
+        max_width = size - (margin_x * 2)
+        top_y = int(60 * scale)
+        bottom_margin = int(70 * scale)
+        line_spacing = int(10 * scale)
 
-    margin_x = int(50 * scale)
-    max_width = size - (margin_x * 2)
-    top_y = int(60 * scale)
-    bottom_margin = int(70 * scale)
-    line_spacing = int(10 * scale)
+        font_top = _load_font(int(75 * scale))
+        font_bottom = _load_font(int(65 * scale))
 
-    font_top = _load_font(int(75 * scale))
-    font_bottom = _load_font(int(65 * scale))
+        top_lines = _split_words_into_lines(draw, top_text, font_top, max_width, 2)
+        bottom_lines = (
+            _split_words_into_lines(draw, bottom_text, font_bottom, max_width, 2)
+            if (bottom_text or "").strip()
+            else []
+        )
 
-    top_lines = _split_words_into_lines(draw, top_text, font_top, max_width, 2)
-    bottom_lines = _split_words_into_lines(draw, bottom_text, font_bottom, max_width, 2) if (bottom_text or "").strip() else []
+        text_fill = _text_color_rgb()
+        y = top_y
+        for ln in top_lines:
+            draw.text((margin_x, y), ln, fill=text_fill, font=font_top)
+            bbox = draw.textbbox((0, 0), ln, font=font_top)
+            y += (bbox[3] - bbox[1]) + line_spacing
 
-    text_fill = _text_color_rgb()
-    y = top_y
-    for ln in top_lines:
-        draw.text((margin_x, y), ln, fill=text_fill, font=font_top)
-        bbox = draw.textbbox((0, 0), ln, font=font_top)
-        y += (bbox[3] - bbox[1]) + line_spacing
+        bottom_heights: list[int] = []
+        for ln in bottom_lines:
+            bbox = draw.textbbox((0, 0), ln, font=font_bottom)
+            bottom_heights.append(bbox[3] - bbox[1])
+        if bottom_heights:
+            bottom_block_h = sum(bottom_heights) + (line_spacing * max(0, len(bottom_heights) - 1))
+            bottom_y = size - bottom_margin - bottom_block_h
+            y2 = bottom_y
+            for i, ln in enumerate(bottom_lines):
+                draw.text((margin_x, y2), ln, fill=text_fill, font=font_bottom)
+                y2 += bottom_heights[i] + line_spacing
 
-    bottom_heights: list[int] = []
-    for ln in bottom_lines:
-        bbox = draw.textbbox((0, 0), ln, font=font_bottom)
-        bottom_heights.append(bbox[3] - bbox[1])
-    if bottom_heights:
-        bottom_block_h = sum(bottom_heights) + (line_spacing * max(0, len(bottom_heights) - 1))
-        bottom_y = size - bottom_margin - bottom_block_h
-        y2 = bottom_y
-        for i, ln in enumerate(bottom_lines):
-            draw.text((margin_x, y2), ln, fill=text_fill, font=font_bottom)
-            y2 += bottom_heights[i] + line_spacing
-
-    out_img = canvas.resize((CARD_SIZE, CARD_SIZE), resample=Image.Resampling.LANCZOS)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    out_img.save(out_path)
-    return {"color": base_color, "path": out_path}
+        out_img = canvas.resize((CARD_SIZE, CARD_SIZE), resample=Image.Resampling.LANCZOS)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        out_img.save(out_path)
+        return {"color": base_color, "path": out_path}
+    finally:
+        for im in (out_img, mask, depth, overlay, card, card_rgb, canvas):
+            try:
+                if im is not None:
+                    im.close()
+            except Exception:
+                pass
 
 
 def _cloudinary_config() -> dict[str, str]:

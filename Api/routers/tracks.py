@@ -47,6 +47,33 @@ def _album_id(*, artist: str, title: str) -> str:
     return f"album_{a}_{t}"
 
 
+def _artist_id(name: str) -> str:
+    s = _slugify(name)
+    if not s:
+        return ""
+    return f"artist_{s}"
+
+
+_ARTIST_SPLIT_RE = re.compile(r"\s*(?:,|/|&| and | x | feat\. | feat | ft\. | ft )\s*", flags=re.I)
+
+
+def _split_artists(value: str) -> list[str]:
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    raw = raw.replace("(", " ").replace(")", " ").replace("[", " ").replace("]", " ").strip()
+    parts = [p.strip() for p in _ARTIST_SPLIT_RE.split(raw) if p and p.strip()]
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        key = p.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
 def _clean_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -109,6 +136,7 @@ async def _refresh_albums_cache(*, limit_albums: int = 2000) -> dict[str, int]:
         processed += 1
         title = (row.get("title") or "").strip() if isinstance(row, dict) else ""
         artist = (row.get("artist") or "").strip() if isinstance(row, dict) else ""
+        artists = _split_artists(artist) if artist else []
         cover_url = _clean_url(row.get("cover_url")) if isinstance(row, dict) else ""
         tracks_count = int(row.get("tracks_count") or 0) if isinstance(row, dict) else 0
         duration_total = int(row.get("duration_total") or 0) if isinstance(row, dict) else 0
@@ -128,6 +156,7 @@ async def _refresh_albums_cache(*, limit_albums: int = 2000) -> dict[str, int]:
                 "$set": {
                     "title": title,
                     "artist": artist,
+                    "artists": artists if artists else None,
                     "cover_url": cover_url or None,
                     "tracks_count": tracks_count,
                     "duration_total": duration_total,
@@ -142,6 +171,113 @@ async def _refresh_albums_cache(*, limit_albums: int = 2000) -> dict[str, int]:
             upserted += 1
 
     return {"processed": processed, "upserted": upserted}
+
+
+async def _refresh_artists_cache(*, limit_tracks: int = 20000, limit_artists: int = 5000) -> dict[str, int]:
+    limit_tracks = int(limit_tracks)
+    if limit_tracks <= 0:
+        limit_tracks = 20000
+    if limit_tracks > 100_000:
+        limit_tracks = 100_000
+
+    limit_artists = int(limit_artists)
+    if limit_artists <= 0:
+        limit_artists = 5000
+    if limit_artists > 20_000:
+        limit_artists = 20_000
+
+    tracks_col = get_audio_tracks_collection()
+    cursor = (
+        tracks_col.find(
+            {
+                "deleted": {"$ne": True},
+                "$or": [{"audio.artist": {"$exists": True, "$ne": ""}}, {"audio.performer": {"$exists": True, "$ne": ""}}],
+            },
+            {"audio.artist": 1, "audio.performer": 1, "audio.artists": 1, "spotify.cover_url": 1, "updated_at": 1},
+        )
+        .sort([("updated_at", -1)])
+        .limit(int(limit_tracks))
+    )
+
+    by_key: dict[str, dict[str, object]] = {}
+    scanned = 0
+    for_limit = 0
+    async for doc in cursor:
+        scanned += 1
+        audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
+        raw_artists = audio.get("artists")
+        artists: list[str] = []
+        if isinstance(raw_artists, list):
+            for a in raw_artists:
+                if isinstance(a, str) and a.strip():
+                    artists.append(a.strip())
+        if not artists:
+            raw_artist = audio.get("artist") or audio.get("performer") or ""
+            raw_artist = raw_artist.strip() if isinstance(raw_artist, str) else ""
+            if not raw_artist:
+                continue
+            artists = _split_artists(raw_artist) or [raw_artist]
+        cover_url = ""
+        spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
+        if isinstance(spotify.get("cover_url"), str):
+            cover_url = _clean_url(spotify.get("cover_url"))
+        updated_at = float(doc.get("updated_at") or 0.0)
+        for name in artists:
+            k = name.casefold().strip()
+            if not k:
+                continue
+            entry = by_key.get(k)
+            if entry is None:
+                by_key[k] = {
+                    "name": name,
+                    "match_artist": k,
+                    "cover_url": cover_url or None,
+                    "tracks_count": 1,
+                    "updated_at": updated_at,
+                }
+            else:
+                entry["tracks_count"] = int(entry.get("tracks_count") or 0) + 1
+                prev_updated = float(entry.get("updated_at") or 0.0)
+                if updated_at > prev_updated:
+                    entry["updated_at"] = updated_at
+                    if cover_url:
+                        entry["cover_url"] = cover_url
+        if len(by_key) >= limit_artists:
+            for_limit += 1
+            if for_limit >= 250:
+                break
+
+    artists_col = db_handler.get_collection("artists").collection
+    now = time.time()
+    upserted = 0
+    processed = 0
+    for k, entry in sorted(by_key.items(), key=lambda kv: float(kv[1].get("updated_at") or 0.0), reverse=True)[:limit_artists]:
+        processed += 1
+        name = (entry.get("name") or "").strip()
+        match_artist = (entry.get("match_artist") or "").strip()
+        if not name or not match_artist:
+            continue
+        aid = _artist_id(name)
+        if not aid:
+            continue
+        res = await artists_col.update_one(
+            {"_id": aid},
+            {
+                "$setOnInsert": {"created_at": now, "followers": 0},
+                "$set": {
+                    "name": name,
+                    "cover_url": entry.get("cover_url"),
+                    "tracks_count": int(entry.get("tracks_count") or 0),
+                    "match_artist": match_artist,
+                    "updated_at": float(entry.get("updated_at") or now),
+                },
+            },
+            upsert=True,
+        )
+        if getattr(res, "upserted_id", None) is not None:
+            upserted += 1
+
+    return {"scanned_tracks": scanned, "processed_artists": processed, "upserted": upserted}
 
 
 def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
@@ -470,6 +606,320 @@ async def album_details(album_id: str):
     album.pop("match_album", None)
     album.pop("match_artist", None)
     return {"ok": True, "album": album, "tracks": tracks}
+
+
+@router.get("/albums/{album_id}/tracks")
+async def album_tracks(
+    album_id: str,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    aid = (album_id or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="album_id is required")
+
+    albums_col = db_handler.get_collection("albums").collection
+    album = await albums_col.find_one({"_id": aid})
+    if not album:
+        raise HTTPException(status_code=404, detail="album not found")
+
+    match_album = (album.get("match_album") or "").strip()
+    match_artist = (album.get("match_artist") or "").strip()
+    if not match_album or not match_artist:
+        raise HTTPException(status_code=404, detail="album not ready")
+
+    tracks_col = get_audio_tracks_collection()
+    base_pipeline = [
+        {"$match": {"deleted": {"$ne": True}, "audio.album": {"$exists": True, "$ne": ""}}},
+        {
+            "$addFields": {
+                "_album_title": "$audio.album",
+                "_album_artist": {"$ifNull": ["$audio.artist", "$audio.performer"]},
+            }
+        },
+        {
+            "$addFields": {
+                "_album_norm": {"$toLower": {"$trim": {"input": "$_album_title"}}},
+                "_artist_norm": {"$toLower": {"$trim": {"input": "$_album_artist"}}},
+            }
+        },
+        {"$match": {"_album_norm": str(match_album), "_artist_norm": str(match_artist)}},
+    ]
+
+    total_cur = await tracks_col.aggregate([*base_pipeline, {"$count": "total"}])
+    total_rows = await total_cur.to_list(length=1)
+    total = int(total_rows[0]["total"]) if total_rows else 0
+
+    skip = (int(page) - 1) * int(limit)
+    data_pipeline = [
+        *base_pipeline,
+        {"$sort": {"audio.track_number": 1, "source_message_id": 1, "updated_at": -1}},
+        {"$skip": int(skip)},
+        {"$limit": int(limit)},
+        {
+            "$project": {
+                "_id": 1,
+                "source_chat_id": 1,
+                "source_message_id": 1,
+                "audio": 1,
+                "spotify": 1,
+                "updated_at": 1,
+            }
+        },
+    ]
+    cur = await tracks_col.aggregate(data_pipeline)
+    items: list[dict] = []
+    async for doc in cur:
+        if "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
+        if isinstance(spotify, dict):
+            if isinstance(spotify.get("cover_url"), str):
+                spotify["cover_url"] = _clean_url(spotify.get("cover_url"))
+            if isinstance(spotify.get("url"), str):
+                spotify["url"] = _clean_url(spotify.get("url"))
+            doc["spotify"] = spotify
+        items.append(doc)
+
+    return {"ok": True, "page": int(page), "per_page": int(limit), "total": int(total), "items": items}
+
+
+@router.get("/artists")
+async def list_artists(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    refresh: bool = Query(default=False),
+):
+    artists_col = db_handler.get_collection("artists").collection
+    try:
+        existing = int(await artists_col.estimated_document_count())
+    except Exception:
+        existing = 0
+
+    if refresh or existing <= 0:
+        await _refresh_artists_cache(limit_tracks=100_000 if refresh else 20_000, limit_artists=20_000 if refresh else 5_000)
+        try:
+            existing = int(await artists_col.estimated_document_count())
+        except Exception:
+            existing = 0
+
+    skip = (int(page) - 1) * int(limit)
+    cursor = (
+        artists_col.find({}, {"match_artist": 0})
+        .sort([("updated_at", -1)])
+        .skip(int(skip))
+        .limit(int(limit))
+    )
+    items: list[dict] = []
+    async for doc in cursor:
+        if "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        if isinstance(doc.get("cover_url"), str):
+            doc["cover_url"] = _clean_url(doc.get("cover_url"))
+        items.append(doc)
+    return {"ok": True, "page": int(page), "per_page": int(limit), "total": int(existing), "items": items}
+
+
+@router.get("/artists/{artist_id}")
+async def artist_details(artist_id: str):
+    aid = (artist_id or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="artist_id is required")
+
+    artists_col = db_handler.get_collection("artists").collection
+    artist = await artists_col.find_one({"_id": aid})
+    if not artist:
+        await _refresh_artists_cache(limit_tracks=100_000, limit_artists=20_000)
+        artist = await artists_col.find_one({"_id": aid})
+    if not artist:
+        raise HTTPException(status_code=404, detail="artist not found")
+
+    match_artist = (artist.get("match_artist") or "").strip()
+    if not match_artist:
+        raise HTTPException(status_code=404, detail="artist not ready")
+
+    tracks_col = get_audio_tracks_collection()
+    pipeline = [
+        {
+            "$match": {
+                "deleted": {"$ne": True},
+                "$or": [{"audio.artist": {"$exists": True, "$ne": ""}}, {"audio.performer": {"$exists": True, "$ne": ""}}],
+            }
+        },
+        {"$addFields": {"_artist_raw": {"$ifNull": ["$audio.artist", "$audio.performer"]}}},
+        {"$addFields": {"_artist_norm": {"$toLower": {"$trim": {"input": "$_artist_raw"}}}}},
+        {"$match": {"_artist_norm": str(match_artist)}},
+        {"$sort": {"updated_at": -1}},
+        {"$limit": 200},
+        {
+            "$project": {
+                "_id": 1,
+                "source_chat_id": 1,
+                "source_message_id": 1,
+                "audio": 1,
+                "spotify": 1,
+                "updated_at": 1,
+            }
+        },
+    ]
+    cur = await tracks_col.aggregate(pipeline)
+    tracks: list[dict] = []
+    track_ids: list[str] = []
+    async for doc in cur:
+        tid = str(doc.get("_id") or "").strip()
+        if not tid:
+            continue
+        doc["_id"] = tid
+        spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
+        if isinstance(spotify, dict):
+            if isinstance(spotify.get("cover_url"), str):
+                spotify["cover_url"] = _clean_url(spotify.get("cover_url"))
+            if isinstance(spotify.get("url"), str):
+                spotify["url"] = _clean_url(spotify.get("url"))
+            doc["spotify"] = spotify
+        tracks.append(doc)
+        track_ids.append(tid)
+
+    plays_by_id: dict[str, int] = {}
+    try:
+        if track_ids:
+            gcol = db_handler.globalplayback_collection.collection
+            pcur = gcol.find({"_id": {"$in": track_ids}}, {"plays": 1})
+            async for row in pcur:
+                rid = str(row.get("_id") or "").strip()
+                if not rid:
+                    continue
+                plays_by_id[rid] = int(row.get("plays") or 0)
+    except Exception:
+        plays_by_id = {}
+
+    def _popular_key(d: dict) -> tuple[int, float]:
+        tid = str(d.get("_id") or "")
+        plays = int(plays_by_id.get(tid) or 0)
+        updated_at = float(d.get("updated_at") or 0.0)
+        return (plays, updated_at)
+
+    popular_tracks = sorted(tracks, key=_popular_key, reverse=True)[:10]
+    singles = [t for t in tracks if not (t.get("audio") or {}).get("album")][:20]
+
+    albums_col = db_handler.get_collection("albums").collection
+    releases: list[dict] = []
+    try:
+        acur = albums_col.find({"match_artist": str(match_artist)}, {"match_album": 0, "match_artist": 0}).sort([("updated_at", -1)]).limit(20)
+        async for a in acur:
+            if "_id" in a:
+                a["_id"] = str(a["_id"])
+            if isinstance(a.get("cover_url"), str):
+                a["cover_url"] = _clean_url(a.get("cover_url"))
+            releases.append(a)
+    except Exception:
+        releases = []
+
+    artist["_id"] = str(artist.get("_id"))
+    if isinstance(artist.get("cover_url"), str):
+        artist["cover_url"] = _clean_url(artist.get("cover_url"))
+    artist.pop("match_artist", None)
+
+    return {
+        "ok": True,
+        "artist": artist,
+        "popular_tracks": popular_tracks,
+        "releases": releases,
+        "singles": singles,
+        "tracks": tracks,
+    }
+
+
+@router.get("/artists/{artist_id}/tracks")
+async def artist_tracks(
+    artist_id: str,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    aid = (artist_id or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="artist_id is required")
+
+    artists_col = db_handler.get_collection("artists").collection
+    artist = await artists_col.find_one({"_id": aid})
+    if not artist:
+        raise HTTPException(status_code=404, detail="artist not found")
+
+    match_artist = (artist.get("match_artist") or "").strip()
+    if not match_artist:
+        raise HTTPException(status_code=404, detail="artist not ready")
+
+    tracks_col = get_audio_tracks_collection()
+    base_pipeline = [
+        {"$match": {"deleted": {"$ne": True}}},
+        {
+            "$addFields": {
+                "_artists_raw": {
+                    "$cond": [
+                        {"$isArray": "$audio.artists"},
+                        "$audio.artists",
+                        [
+                            {
+                                "$ifNull": [
+                                    "$audio.artist",
+                                    {"$ifNull": ["$audio.performer", ""]},
+                                ]
+                            }
+                        ],
+                    ]
+                }
+            }
+        },
+        {
+            "$addFields": {
+                "_artists_norm": {
+                    "$map": {
+                        "input": "$_artists_raw",
+                        "as": "a",
+                        "in": {"$toLower": {"$trim": {"input": "$$a"}}},
+                    }
+                }
+            }
+        },
+        {"$match": {"_artists_norm": str(match_artist)}},
+    ]
+
+    total_cur = await tracks_col.aggregate([*base_pipeline, {"$count": "total"}])
+    total_rows = await total_cur.to_list(length=1)
+    total = int(total_rows[0]["total"]) if total_rows else 0
+
+    skip = (int(page) - 1) * int(limit)
+    data_pipeline = [
+        *base_pipeline,
+        {"$sort": {"updated_at": -1}},
+        {"$skip": int(skip)},
+        {"$limit": int(limit)},
+        {
+            "$project": {
+                "_id": 1,
+                "source_chat_id": 1,
+                "source_message_id": 1,
+                "audio": 1,
+                "spotify": 1,
+                "updated_at": 1,
+            }
+        },
+    ]
+    cur = await tracks_col.aggregate(data_pipeline)
+    items: list[dict] = []
+    async for doc in cur:
+        if "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
+        if isinstance(spotify, dict):
+            if isinstance(spotify.get("cover_url"), str):
+                spotify["cover_url"] = _clean_url(spotify.get("cover_url"))
+            if isinstance(spotify.get("url"), str):
+                spotify["url"] = _clean_url(spotify.get("url"))
+            doc["spotify"] = spotify
+        items.append(doc)
+
+    return {"ok": True, "page": int(page), "per_page": int(limit), "total": int(total), "items": items}
 
 
 class AdminDeleteTracksRequest(BaseModel):
