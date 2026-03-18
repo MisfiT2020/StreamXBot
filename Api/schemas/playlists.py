@@ -59,3 +59,21 @@ class PlaylistShareResponse(BaseModel):
     normal_thumbnail: str | None = None
     tracks: list[TrackResponse]
     created_at: float | None = None
+
+
+class UserAlbumAdd(BaseModel):
+    album_id: str | list[str] | None = None
+    album_ids: list[str] | None = None
+
+
+class UserAlbumItem(BaseModel):
+    album_id: str
+    album: dict | None = None
+    saved_at: float | None = None
+
+
+class UserAlbumsResponse(BaseModel):
+    page: int
+    per_page: int
+    total: int
+    items: list[UserAlbumItem]

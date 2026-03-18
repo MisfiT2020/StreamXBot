@@ -225,6 +225,12 @@ class MongoDatabase:
             await artists_col.create_index([("match_artist", 1)])
         except Exception:
             pass
+        try:
+            user_albums_col = self.get_collection("user_albums").collection
+            await user_albums_col.create_index([("user_id", 1), ("album_id", 1)], unique=True)
+            await user_albums_col.create_index([("user_id", 1), ("saved_at", -1)])
+        except Exception:
+            pass
 
     def get_collection(self, col_name: str) -> MongoDB:
         key = (col_name or "").strip()

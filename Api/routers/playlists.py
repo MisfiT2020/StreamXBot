@@ -10,6 +10,9 @@ from Api.schemas.playlists import (
     PlaylistTrackAdd,
     PlaylistTracksResponse,
     PlaylistsResponse,
+    UserAlbumAdd,
+    UserAlbumItem,
+    UserAlbumsResponse,
 )
 from Api.services.genColor import ensure_user_playlist_cover, ensure_user_playlist_normal_cover
 from Api.services.track_service import get_track_by_id, get_tracks_by_ids
@@ -59,6 +62,15 @@ def _playlist_thumbnails(*, cover_url: str | None, track_thumbnails: list[str], 
         seen.add(u2)
 
     return out
+
+
+def _clean_url(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    s = value.strip()
+    if len(s) >= 2 and s[0] == "`" and s[-1] == "`":
+        s = s[1:-1].strip()
+    return s
 
 
 async def _get_playlist_or_404(playlist_id: str, user_id: int) -> dict:
@@ -397,3 +409,97 @@ async def list_playlist_tracks(
 
     tracks = await get_tracks_by_ids(track_ids)
     return PlaylistTracksResponse(page=page, per_page=per_page, total=total, items=tracks)
+
+
+@router.post("/albums")
+async def save_album(payload: UserAlbumAdd, user_id: int = Depends(require_user_id)):
+    a_ids: list[str] = []
+    if isinstance(payload.album_id, list):
+        a_ids.extend(payload.album_id)
+    elif payload.album_id:
+        a_ids.append(payload.album_id)
+    if payload.album_ids:
+        a_ids.extend(payload.album_ids)
+
+    album_ids: list[str] = []
+    seen: set[str] = set()
+    for aid in a_ids:
+        s = str(aid or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        album_ids.append(s)
+
+    if not album_ids:
+        raise HTTPException(status_code=400, detail="album_id or album_ids is required")
+
+    albums_col = db_handler.get_collection("albums").collection
+    existing = await albums_col.find_one({"_id": {"$in": album_ids}}, {"_id": 1})
+    if not existing:
+        raise HTTPException(status_code=404, detail="albums not found")
+
+    col = db_handler.get_collection("user_albums").collection
+    now = time.time()
+    added = 0
+    for aid in album_ids:
+        res = await col.update_one(
+            {"user_id": int(user_id), "album_id": aid},
+            {"$setOnInsert": {"user_id": int(user_id), "album_id": aid, "saved_at": now}, "$set": {"updated_at": now}},
+            upsert=True,
+        )
+        if getattr(res, "upserted_id", None) is not None:
+            added += 1
+
+    if len(album_ids) == 1:
+        return {"ok": True, "already_exists": added == 0}
+    return {"ok": True, "added": int(added)}
+
+
+@router.get("/albums", response_model=UserAlbumsResponse)
+async def list_saved_albums(
+    user_id: int = Depends(require_user_id),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    page = int(page)
+    per_page = int(limit)
+    skip = (page - 1) * per_page
+
+    col = db_handler.get_collection("user_albums").collection
+    query = {"user_id": int(user_id)}
+    total = await col.count_documents(query)
+    if total <= 0:
+        return UserAlbumsResponse(page=page, per_page=per_page, total=0, items=[])
+
+    cursor = col.find(query, {"_id": 0, "album_id": 1, "saved_at": 1}).sort([("saved_at", -1)]).skip(skip).limit(per_page)
+    rows: list[dict] = []
+    album_ids: list[str] = []
+    async for r in cursor:
+        aid = (r.get("album_id") or "").strip()
+        if not aid:
+            continue
+        rows.append({"album_id": aid, "saved_at": r.get("saved_at")})
+        album_ids.append(aid)
+
+    if not album_ids:
+        return UserAlbumsResponse(page=page, per_page=per_page, total=total, items=[])
+
+    albums_col = db_handler.get_collection("albums").collection
+    projection = {"match_album": 0, "match_artist": 0}
+    acur = albums_col.find({"_id": {"$in": album_ids}}, projection)
+    by_id: dict[str, dict] = {}
+    async for a in acur:
+        aid = str(a.get("_id") or "").strip()
+        if not aid:
+            continue
+        a["_id"] = aid
+        if isinstance(a.get("cover_url"), str):
+            a["cover_url"] = _clean_url(a.get("cover_url"))
+        by_id[aid] = a
+
+    items: list[UserAlbumItem] = []
+    for r in rows:
+        aid = r["album_id"]
+        items.append(UserAlbumItem(album_id=aid, album=by_id.get(aid), saved_at=r.get("saved_at")))
+
+    return UserAlbumsResponse(page=page, per_page=per_page, total=int(total), items=items)
