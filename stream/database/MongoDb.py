@@ -193,6 +193,16 @@ class MongoDatabase:
             await freq_col.create_index([("to", 1), ("from", 1), ("status", 1)])
         except Exception:
             pass
+        try:
+            audio_col = self.audio_collection.collection
+            await audio_col.create_index([("deleted", 1), ("audio.album", 1), ("audio.artist", 1)])
+        except Exception:
+            pass
+        try:
+            albums_col = self.get_collection("albums").collection
+            await albums_col.create_index([("updated_at", -1)])
+        except Exception:
+            pass
 
     def get_collection(self, col_name: str) -> MongoDB:
         key = (col_name or "").strip()
