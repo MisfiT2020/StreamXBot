@@ -1,11 +1,17 @@
 import datetime
 import time
 import re
+import json
+import asyncio
+import difflib
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
+import httpx
+from bs4 import BeautifulSoup
 
 from Api.deps.db import get_audio_tracks_collection
 from Api.schemas.browse import BrowseResponse
@@ -81,6 +87,407 @@ def _clean_url(value: Any) -> str:
     if len(s) >= 2 and s[0] == "`" and s[-1] == "`":
         s = s[1:-1].strip()
     return s
+
+
+_APPLE_SIZE_RE = re.compile(r"/(\d+)x(\d+)(bb)?\.(jpg|jpeg|png|webp)$", flags=re.I)
+_ITUNES_M3U8_RE = re.compile(r"(https://mvod\.itunes\.apple\.com/itunes-assets/[^\\s\"']+?/)(P\\d+)_default\\.m3u8", flags=re.I)
+
+
+def _resize_apple_image_url(url: Any, *, size: int = 618) -> str | None:
+    s = _clean_url(url)
+    if not s:
+        return None
+    try:
+        size = int(size)
+    except Exception:
+        size = 618
+    if size <= 0:
+        size = 618
+
+    base = s
+    suffix = ""
+    for sep in ("?", "#"):
+        if sep in base:
+            base, rest = base.split(sep, 1)
+            suffix = sep + rest
+            break
+
+    m = _APPLE_SIZE_RE.search(base)
+    if not m:
+        return s
+    bb = m.group(3) or ""
+    ext = m.group(4)
+    replaced = _APPLE_SIZE_RE.sub(f"/{size}x{size}{bb}.{ext}", base)
+    return replaced + suffix
+
+
+def _itunes_mp4_from_m3u8(url: Any) -> str | None:
+    s = _clean_url(url)
+    if not s:
+        return None
+    m = _ITUNES_M3U8_RE.search(s)
+    if not m:
+        return None
+    base = m.group(1)
+    pid = m.group(2)
+    return f"{base}{pid}_Anull_video_gr697_sdr_3840x2160-.mp4"
+
+
+def _am_artwork_url(artwork: Any, *, size: int = 1000) -> str | None:
+    if not isinstance(artwork, dict):
+        return None
+    u = artwork.get("url")
+    if not isinstance(u, str) or not u.strip():
+        return None
+    url = u.strip()
+    url = url.replace("{w}", str(int(size))).replace("{h}", str(int(size)))
+    return url
+
+
+def _pick_first_str(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for k in ("name", "value", "text", "title", "label", "displayName", "display_name"):
+            v = value.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    if isinstance(value, list):
+        for v in value:
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, dict):
+                picked = _pick_first_str(v)
+                if picked:
+                    return picked
+    return None
+
+
+def _shazam_artist_slug(name: str) -> str:
+    return _slugify(name).replace("_", "-")
+
+
+def _norm_artist_query(value: str) -> str:
+    s = (value or "").strip().lower()
+    s = re.sub(r"[^a-z0-9\s]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _artist_query_score(*, q: str, name: str) -> float:
+    qn = _norm_artist_query(q)
+    nn = _norm_artist_query(name)
+    if not qn or not nn:
+        return 0.0
+    if qn == nn:
+        return 1000.0
+    score = difflib.SequenceMatcher(None, qn, nn).ratio() * 100.0
+    if nn.startswith(qn):
+        score += 50.0
+    if qn in nn:
+        score += 25.0
+    q_tokens = set(qn.split())
+    n_tokens = set(nn.split())
+    if q_tokens and n_tokens:
+        inter = len(q_tokens & n_tokens)
+        union = len(q_tokens | n_tokens)
+        score += (inter / union) * 40.0
+    return score
+
+
+def _infer_formed(value: str | None) -> str | None:
+    s = (value or "").strip()
+    if not s:
+        return None
+    s2 = s.replace("\u2014", "-").replace("\u2013", "-")
+    for pat in (
+        r"\bformed\s+(?:in\s+)?(\d{4})\b",
+        r"\bbrought together in\s+(\d{4})\b",
+        r"\bestablished\s+(?:in\s+)?(\d{4})\b",
+        r"\bfounded\s+(?:in\s+)?(\d{4})\b",
+        r"\bformed\s+around\s+(\d{4})\b",
+    ):
+        m = re.search(pat, s2, flags=re.I)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def _fetch_shazam_json(client: httpx.AsyncClient, url: str, *, params: dict[str, object] | None = None) -> Any:
+    r = await client.get(url, params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+async def _fetch_shazam_html(client: httpx.AsyncClient, url: str) -> str:
+    r = await client.get(url)
+    r.raise_for_status()
+    return r.text
+
+
+def _parse_shazam_artist_html(html: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    try:
+        soup = BeautifulSoup(html or "", "html.parser")
+    except Exception:
+        return out
+
+    scripts = soup.find_all("script", attrs={"type": "application/ld+json"})
+    found_ld = False
+    for s in scripts:
+        try:
+            raw = s.string or s.text or ""
+            if not raw.strip():
+                continue
+            data = json.loads(raw)
+        except Exception:
+            continue
+
+        candidates: list[dict] = []
+        if isinstance(data, dict):
+            candidates = [data]
+        elif isinstance(data, list):
+            candidates = [x for x in data if isinstance(x, dict)]
+
+        for obj in candidates:
+            t = str(obj.get("@type") or "").strip()
+            if t not in ("MusicGroup", "Person", "MusicArtist"):
+                continue
+            name = _pick_first_str(obj.get("name"))
+            if name:
+                out["name"] = name
+            genres = obj.get("genre")
+            if isinstance(genres, list):
+                out["genres"] = [str(x).strip() for x in genres if isinstance(x, str) and x.strip()]
+            elif isinstance(genres, str) and genres.strip():
+                out["genres"] = [genres.strip()]
+            desc = _pick_first_str(obj.get("description"))
+            if desc:
+                out["description"] = desc
+            img = obj.get("image")
+            if isinstance(img, dict):
+                u = _pick_first_str(img.get("url"))
+                if u:
+                    out["image_url"] = u
+            elif isinstance(img, str) and img.strip():
+                out["image_url"] = img.strip()
+            found_ld = True
+            break
+        if found_ld:
+            break
+
+    try:
+        video_block = soup.find(attrs={"data-test-id": "artist_impression_artistVideo"})
+        video = None
+        if video_block is not None:
+            video = video_block.find("video")
+        if video is None:
+            video = soup.find("video")
+        if video is not None:
+            poster = video.get("poster")
+            if isinstance(poster, str) and poster.strip():
+                out["video_poster_url"] = poster.strip()
+
+        search_html = str(video_block) if video_block is not None else (html or "")
+        idx = search_html.lower().find(".m3u8")
+        if idx != -1:
+            start = search_html.rfind("https://", 0, idx)
+            if start != -1:
+                end = search_html.find(".m3u8", start) + 5
+                if end > start:
+                    out["video_hls_url"] = search_html[start:end]
+        if not out.get("video_hls_url"):
+            full_html = html or ""
+            idx2 = full_html.lower().find(".m3u8")
+            if idx2 != -1:
+                start2 = full_html.rfind("https://", 0, idx2)
+                if start2 != -1:
+                    end2 = full_html.find(".m3u8", start2) + 5
+                    if end2 > start2:
+                        out["video_hls_url"] = full_html[start2:end2]
+        if out.get("video_hls_url"):
+            mp4 = _itunes_mp4_from_m3u8(out.get("video_hls_url"))
+            if mp4:
+                out["video_mp4_url"] = mp4
+    except Exception:
+        pass
+
+    try:
+        members: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for a in soup.find_all("a", attrs={"data-test-id": re.compile(r"artist_userevent_artistBandMembers", flags=re.I)}):
+            name = a.get_text(" ", strip=True)
+            href = a.get("href")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if not isinstance(href, str) or not href.strip():
+                continue
+            key = f"{name.casefold()}|{href}"
+            if key in seen:
+                continue
+            seen.add(key)
+            mid = None
+            try:
+                m = re.search(r"/(\\d+)$", href.strip())
+                if m:
+                    mid = m.group(1)
+            except Exception:
+                mid = None
+            item = {"name": name.strip(), "href": href.strip()}
+            if mid:
+                item["id"] = str(mid)
+            members.append(item)
+        if members:
+            out["members"] = members
+    except Exception:
+        pass
+
+    try:
+        member_of: list[dict[str, str]] = []
+        seen2: set[str] = set()
+        for a in soup.find_all("a", attrs={"data-test-id": re.compile(r"artist_userevent_memberOfArtistItem", flags=re.I)}):
+            name = a.get_text(" ", strip=True)
+            href = a.get("href")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if not isinstance(href, str) or not href.strip():
+                continue
+            key = f"{name.casefold()}|{href}"
+            if key in seen2:
+                continue
+            seen2.add(key)
+            member_of.append({"name": name.strip(), "href": href.strip()})
+        if member_of:
+            out["member_of"] = member_of
+    except Exception:
+        pass
+
+    try:
+        links: list[dict[str, str]] = []
+        seen3: set[str] = set()
+        for a in soup.find_all("a", href=True):
+            dt = a.get("data-test-id")
+            if not isinstance(dt, str) or "artistsociallink" not in dt.casefold():
+                continue
+
+            href = a.get("href")
+            if not isinstance(href, str) or not href.strip():
+                continue
+            href = _clean_url(href)
+            if not href:
+                continue
+
+            if href in seen3:
+                continue
+            seen3.add(href)
+
+            platform = ""
+            try:
+                host = (urlparse(href).netloc or "").lower()
+                if host.startswith("www."):
+                    host = host[4:]
+                if host:
+                    if "instagram" in host:
+                        platform = "instagram"
+                    elif host in {"x.com"} or "twitter" in host:
+                        platform = "x"
+                    elif "facebook" in host:
+                        platform = "facebook"
+                    elif "youtube" in host or host in {"youtu.be"}:
+                        platform = "youtube"
+                    elif "tiktok" in host:
+                        platform = "tiktok"
+                    elif "soundcloud" in host:
+                        platform = "soundcloud"
+                    elif "spotify" in host:
+                        platform = "spotify"
+                    else:
+                        platform = host
+            except Exception:
+                platform = ""
+
+            item: dict[str, str] = {"href": href}
+            if platform:
+                item["platform"] = platform
+            links.append(item)
+            if len(links) >= 25:
+                break
+        if links:
+            out["links"] = links
+    except Exception:
+        pass
+
+    try:
+        lines = [ln.strip() for ln in soup.get_text("\n", strip=True).splitlines() if ln and ln.strip()]
+        for i, ln in enumerate(lines):
+            if ln.casefold() == "hometown":
+                if i + 1 < len(lines):
+                    out.setdefault("hometown", lines[i + 1])
+            if ln.casefold() == "born":
+                if i + 1 < len(lines):
+                    out.setdefault("born", lines[i + 1])
+            if ln.casefold() == "formed":
+                if i + 1 < len(lines):
+                    out.setdefault("formed", lines[i + 1])
+    except Exception:
+        pass
+
+    return out
+
+
+def _parse_shazam_artist_detail_json(data: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if isinstance(data, dict) and isinstance(data.get("data"), list) and data["data"]:
+        node = data["data"][0]
+    elif isinstance(data, dict) and isinstance(data.get("data"), dict):
+        node = data["data"]
+    else:
+        node = None
+
+    if not isinstance(node, dict):
+        return out
+
+    out["id"] = _pick_first_str(node.get("id"))
+    out["href"] = _pick_first_str(node.get("href"))
+    attrs = node.get("attributes") if isinstance(node.get("attributes"), dict) else {}
+    if isinstance(attrs, dict):
+        name = _pick_first_str(attrs.get("name"))
+        if name:
+            out["name"] = name
+        genres = attrs.get("genreNames")
+        if isinstance(genres, list):
+            out["genres"] = [str(x).strip() for x in genres if isinstance(x, str) and x.strip()]
+        desc = None
+        notes = attrs.get("editorialNotes") if isinstance(attrs.get("editorialNotes"), dict) else {}
+        if isinstance(notes, dict):
+            desc = _pick_first_str(notes.get("standard")) or _pick_first_str(notes.get("short"))
+        if desc:
+            out["description"] = desc
+        born = _pick_first_str(attrs.get("dateOfBirth")) or _pick_first_str(attrs.get("born")) or _pick_first_str(attrs.get("birthDate"))
+        if born:
+            out["born"] = born
+        formed = (
+            _pick_first_str(attrs.get("bornOrFormed"))
+            or _pick_first_str(attrs.get("born_or_formed"))
+            or _pick_first_str(attrs.get("formed"))
+            or _pick_first_str(attrs.get("formedOn"))
+        )
+        if formed:
+            out["formed"] = formed
+        hometown = (
+            _pick_first_str(attrs.get("origin"))
+            or _pick_first_str(attrs.get("homeTown"))
+            or _pick_first_str(attrs.get("hometown"))
+            or _pick_first_str(attrs.get("birthPlace"))
+            or _pick_first_str(attrs.get("location"))
+        )
+        if hometown:
+            out["hometown"] = hometown
+        img = _am_artwork_url(attrs.get("artwork")) or _am_artwork_url(attrs.get("editorialArtwork"))
+        if img:
+            out["image_url"] = img
+
+    return out
 
 
 async def _refresh_albums_cache(*, limit_albums: int = 2000) -> dict[str, int]:
@@ -376,6 +783,62 @@ async def _has_daily_playlist_tracks(*, key: str) -> bool:
     return False
 
 
+class ArtistSearchItem(BaseModel):
+    id: str
+    name: str
+    href: str | None = None
+    image_url: str | None = None
+    video_poster_url: str | None = None
+    video_hls_url: str | None = None
+    video_mp4_url: str | None = None
+    genres: list[str] | None = None
+    description: str | None = None
+    hometown: str | None = None
+    born: str | None = None
+    formed: str | None = None
+    links: list[dict[str, str]] | None = None
+    members: list[dict[str, str]] | None = None
+    member_of: list[dict[str, str]] | None = None
+    source: str = "shazam"
+
+
+class ArtistSearchResponse(BaseModel):
+    ok: bool = True
+    q: str
+    country: str
+    items: list[ArtistSearchItem]
+
+
+class ArtistLookupResponse(BaseModel):
+    ok: bool = True
+    id: str
+    country: str
+    item: ArtistSearchItem | None = None
+
+
+def _extract_artist_search_items(payload: Any) -> list[dict]:
+    if isinstance(payload, dict):
+        results = payload.get("results")
+        if isinstance(results, dict):
+            artists = results.get("artists")
+            if isinstance(artists, dict) and isinstance(artists.get("data"), list):
+                return [x for x in artists.get("data") if isinstance(x, dict)]
+
+        if isinstance(payload.get("data"), list):
+            return [x for x in payload.get("data") if isinstance(x, dict)]
+
+        for v in payload.values():
+            items = _extract_artist_search_items(v)
+            if items:
+                return items
+    elif isinstance(payload, list):
+        for v in payload:
+            items = _extract_artist_search_items(v)
+            if items:
+                return items
+    return []
+
+
 @router.get("/search", response_model=BrowseResponse)
 async def search(
     q: str | None = Query(default=None, min_length=0, max_length=80),
@@ -402,6 +865,294 @@ async def track_search(
     if not q:
         return BrowseResponse(page=int(page), per_page=int(limit), total=0, items=[])
     return await search_tracks(q, channel_id=channel_id, page=int(page), per_page=int(limit))
+
+
+@router.get("/search/artists", response_model=ArtistSearchResponse)
+async def search_artists(
+    q: str = Query(default="", min_length=0, max_length=80),
+    limit: int = Query(default=1, ge=1, le=25),
+    include_page: bool = Query(default=True),
+):
+    term = (q or "").strip()
+    if not term:
+        return ArtistSearchResponse(q="", country=str(getattr(Config, "SHAZAM_COUNTRY", "IN") or "IN"), items=[])
+
+    base_country = str(getattr(Config, "SHAZAM_COUNTRY", "IN") or "IN").strip().upper()
+    if len(base_country) not in (2, 3):
+        base_country = "IN"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Referer": "https://www.shazam.com/",
+    }
+    timeout = httpx.Timeout(10.0, connect=10.0)
+    sem = asyncio.Semaphore(6)
+
+    async def _get_json(url: str, *, params: dict[str, object] | None = None) -> Any:
+        async with sem:
+            return await _fetch_shazam_json(client, url, params=params)
+
+    async def _get_html(url: str) -> str:
+        async with sem:
+            return await _fetch_shazam_html(client, url)
+
+    async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
+        search_url = f"https://www.shazam.com/services/amapi/v1/catalog/{base_country}/search"
+        requested_limit = int(limit)
+        if requested_limit < 1:
+            requested_limit = 1
+        if requested_limit > 25:
+            requested_limit = 25
+        fetch_limit = max(requested_limit, 10)
+        raw = await _get_json(search_url, params={"types": "artists", "term": term, "limit": int(fetch_limit)})
+        nodes = _extract_artist_search_items(raw)
+
+        ranked_nodes: list[tuple[float, dict]] = []
+        for n in nodes:
+            attrs = n.get("attributes") if isinstance(n.get("attributes"), dict) else {}
+            name0 = _pick_first_str(attrs.get("name")) or _pick_first_str(n.get("name")) or ""
+            ranked_nodes.append((_artist_query_score(q=term, name=str(name0)), n))
+        ranked_nodes.sort(key=lambda x: x[0], reverse=True)
+        nodes2 = [n for _, n in ranked_nodes[:requested_limit]]
+
+        async def _hydrate(node: dict) -> ArtistSearchItem | None:
+            sid = _pick_first_str(node.get("id"))
+            href = _pick_first_str(node.get("href"))
+            detail: dict[str, Any] = {}
+            if href:
+                try:
+                    detail_url = f"https://www.shazam.com/services/amapi{href}"
+                    detail_json = await _get_json(detail_url)
+                    detail = _parse_shazam_artist_detail_json(detail_json)
+                except Exception:
+                    detail = {}
+
+            name = _pick_first_str(detail.get("name")) or _pick_first_str((node.get("attributes") or {}).get("name")) or None
+            if not sid:
+                sid = _pick_first_str(detail.get("id"))
+            if not href:
+                href = _pick_first_str(detail.get("href"))
+
+            html_meta: dict[str, Any] = {}
+            should_fetch_page = False
+            if include_page and sid and name:
+                should_fetch_page = True if requested_limit <= 5 else False
+            if not should_fetch_page:
+                if not detail.get("hometown") or not detail.get("formed"):
+                    should_fetch_page = True
+                if not detail.get("image_url") or not detail.get("description") or not (isinstance(detail.get("genres"), list) and detail.get("genres")):
+                    should_fetch_page = True
+
+            if include_page and should_fetch_page and sid and name:
+                try:
+                    slug = _shazam_artist_slug(name)
+                    page_url = f"https://www.shazam.com/artist/{slug}/{sid}"
+                    html = await _get_html(page_url)
+                    html_meta = _parse_shazam_artist_html(html)
+                except Exception:
+                    html_meta = {}
+
+            async def _enrich_members_with_images(members: list[dict[str, str]]) -> list[dict[str, str]]:
+                out_members: list[dict[str, str]] = []
+                for m in members[:12]:
+                    if not isinstance(m, dict):
+                        continue
+                    href2 = m.get("href")
+                    if not isinstance(href2, str) or not href2.strip():
+                        out_members.append(m)
+                        continue
+                    if isinstance(m.get("image_url"), str) and m.get("image_url", "").strip():
+                        resized = _resize_apple_image_url(m.get("image_url"), size=618)
+                        if resized:
+                            m = {**m, "image_url": resized}
+                        out_members.append(m)
+                        continue
+                    url2 = href2.strip()
+                    if url2.startswith("/"):
+                        url2 = "https://www.shazam.com" + url2
+                    try:
+                        html2 = await _get_html(url2)
+                        meta2 = _parse_shazam_artist_html(html2)
+                        img2 = _pick_first_str(meta2.get("image_url"))
+                        if img2:
+                            m = {**m, "image_url": _resize_apple_image_url(img2, size=618) or _clean_url(img2)}
+                    except Exception:
+                        pass
+                    out_members.append(m)
+                return out_members
+
+            genres = detail.get("genres") if isinstance(detail.get("genres"), list) else None
+            if not genres and isinstance(html_meta.get("genres"), list):
+                genres = html_meta.get("genres")
+
+            image_url = _pick_first_str(detail.get("image_url")) or _pick_first_str(html_meta.get("image_url"))
+            description = _pick_first_str(detail.get("description")) or _pick_first_str(html_meta.get("description"))
+            hometown = _pick_first_str(detail.get("hometown")) or _pick_first_str(html_meta.get("hometown"))
+            born = _pick_first_str(detail.get("born")) or _pick_first_str(html_meta.get("born"))
+            formed = _pick_first_str(detail.get("formed")) or _pick_first_str(html_meta.get("formed"))
+            if not formed:
+                formed = _infer_formed(description)
+
+            if not sid or not name:
+                return None
+
+            members = html_meta.get("members") if isinstance(html_meta.get("members"), list) else None
+            if members:
+                members = await _enrich_members_with_images(members)
+
+            return ArtistSearchItem(
+                id=str(sid),
+                href=href,
+                name=str(name),
+                image_url=_resize_apple_image_url(image_url, size=618) if image_url else None,
+                video_poster_url=_clean_url(_pick_first_str(html_meta.get("video_poster_url"))) if html_meta.get("video_poster_url") else None,
+                video_hls_url=_clean_url(_pick_first_str(html_meta.get("video_hls_url"))) if html_meta.get("video_hls_url") else None,
+                video_mp4_url=_clean_url(_pick_first_str(html_meta.get("video_mp4_url")))
+                if html_meta.get("video_mp4_url")
+                else _itunes_mp4_from_m3u8(_pick_first_str(html_meta.get("video_hls_url"))),
+                genres=[str(x) for x in genres] if isinstance(genres, list) else None,
+                description=description,
+                hometown=hometown,
+                born=born,
+                formed=formed,
+                links=html_meta.get("links") if isinstance(html_meta.get("links"), list) else None,
+                members=members,
+                member_of=html_meta.get("member_of") if isinstance(html_meta.get("member_of"), list) else None,
+                source="shazam",
+            )
+
+        hydrated = await asyncio.gather(*[_hydrate(n) for n in nodes2], return_exceptions=False)
+        items = [x for x in hydrated if x is not None]
+        items.sort(key=lambda it: _artist_query_score(q=term, name=str(it.name)), reverse=True)
+
+    return ArtistSearchResponse(q=term, country=base_country, items=items)
+
+
+@router.get("/search/artists/id/{artist_id}", response_model=ArtistLookupResponse)
+async def artist_by_id(
+    artist_id: str,
+    include_page: bool = Query(default=True),
+    slug: str | None = Query(default=None, min_length=0, max_length=80),
+):
+    sid = str(artist_id or "").strip()
+    if not sid.isdigit():
+        raise HTTPException(status_code=400, detail="artist_id must be numeric")
+
+    base_country = str(getattr(Config, "SHAZAM_COUNTRY", "IN") or "IN").strip().upper()
+    if len(base_country) not in (2, 3):
+        base_country = "IN"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.shazam.com/",
+    }
+    timeout = httpx.Timeout(15.0, connect=10.0)
+
+    href = f"/v1/catalog/{base_country.lower()}/artists/{sid}"
+    detail: dict[str, Any] = {"id": sid, "href": href}
+    try:
+        async with httpx.AsyncClient(headers={**headers, "Accept": "application/json"}, timeout=timeout, follow_redirects=True) as client:
+            try:
+                detail_url = f"https://www.shazam.com/services/amapi{href}"
+                detail_json = await _fetch_shazam_json(client, detail_url)
+                detail2 = _parse_shazam_artist_detail_json(detail_json)
+                if isinstance(detail2, dict) and detail2:
+                    detail.update({k: v for k, v in detail2.items() if v is not None})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    html_meta: dict[str, Any] = {}
+    if include_page:
+        try:
+            raw_slug = (slug or "").strip()
+            if raw_slug:
+                page_slug = _shazam_artist_slug(raw_slug)
+            else:
+                page_slug = "x"
+            page_url = f"https://www.shazam.com/artist/{page_slug}/{sid}"
+            async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
+                html = await _fetch_shazam_html(client, page_url)
+            html_meta = _parse_shazam_artist_html(html)
+        except Exception:
+            html_meta = {}
+
+    name = _pick_first_str(detail.get("name")) or _pick_first_str(html_meta.get("name"))
+    if not name:
+        name = sid
+
+    genres = detail.get("genres") if isinstance(detail.get("genres"), list) else None
+    if not genres and isinstance(html_meta.get("genres"), list):
+        genres = html_meta.get("genres")
+
+    description = _pick_first_str(detail.get("description")) or _pick_first_str(html_meta.get("description"))
+    hometown = _pick_first_str(detail.get("hometown")) or _pick_first_str(html_meta.get("hometown"))
+    born = _pick_first_str(detail.get("born")) or _pick_first_str(html_meta.get("born"))
+    formed = _pick_first_str(detail.get("formed")) or _pick_first_str(html_meta.get("formed"))
+    if not formed:
+        formed = _infer_formed(description)
+
+    image_url = _pick_first_str(detail.get("image_url")) or _pick_first_str(html_meta.get("image_url"))
+
+    members = html_meta.get("members") if isinstance(html_meta.get("members"), list) else None
+    if include_page and members:
+        try:
+            async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
+                out_members: list[dict[str, str]] = []
+                for m in members[:12]:
+                    if not isinstance(m, dict):
+                        continue
+                    href2 = m.get("href")
+                    if not isinstance(href2, str) or not href2.strip():
+                        out_members.append(m)
+                        continue
+                    if isinstance(m.get("image_url"), str) and m.get("image_url", "").strip():
+                        resized = _resize_apple_image_url(m.get("image_url"), size=618)
+                        if resized:
+                            m = {**m, "image_url": resized}
+                        out_members.append(m)
+                        continue
+                    url2 = href2.strip()
+                    if url2.startswith("/"):
+                        url2 = "https://www.shazam.com" + url2
+                    try:
+                        html2 = await _fetch_shazam_html(client, url2)
+                        meta2 = _parse_shazam_artist_html(html2)
+                        img2 = _pick_first_str(meta2.get("image_url"))
+                        if img2:
+                            m = {**m, "image_url": _resize_apple_image_url(img2, size=618) or _clean_url(img2)}
+                    except Exception:
+                        pass
+                    out_members.append(m)
+                members = out_members
+        except Exception:
+            pass
+
+    item = ArtistSearchItem(
+        id=sid,
+        href=href,
+        name=str(name),
+        image_url=_resize_apple_image_url(image_url, size=618) if image_url else None,
+        video_poster_url=_clean_url(_pick_first_str(html_meta.get("video_poster_url"))) if html_meta.get("video_poster_url") else None,
+        video_hls_url=_clean_url(_pick_first_str(html_meta.get("video_hls_url"))) if html_meta.get("video_hls_url") else None,
+        video_mp4_url=_clean_url(_pick_first_str(html_meta.get("video_mp4_url")))
+        if html_meta.get("video_mp4_url")
+        else _itunes_mp4_from_m3u8(_pick_first_str(html_meta.get("video_hls_url"))),
+        genres=[str(x) for x in genres] if isinstance(genres, list) else None,
+        description=description,
+        hometown=hometown,
+        born=born,
+        formed=formed,
+        links=html_meta.get("links") if isinstance(html_meta.get("links"), list) else None,
+        members=members,
+        member_of=html_meta.get("member_of") if isinstance(html_meta.get("member_of"), list) else None,
+        source="shazam",
+    )
+
+    return ArtistLookupResponse(id=sid, country=base_country, item=item)
 
 @router.get("/tracks/shuffle", response_model=BrowseResponse)
 async def track_shuffle(
