@@ -217,6 +217,8 @@ class MongoDatabase:
         try:
             albums_col = self.get_collection("albums").collection
             await albums_col.create_index([("updated_at", -1)])
+            await albums_col.create_index([("artist", 1)])
+            await albums_col.create_index([("match_artist", 1)])
         except Exception:
             pass
         try:
