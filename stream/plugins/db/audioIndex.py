@@ -2,6 +2,7 @@ import time
 import asyncio
 import json
 import re
+import unicodedata
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 
@@ -163,7 +164,7 @@ def _coerce_int(value):
 
 
 _ARTIST_SPLIT_RE = re.compile(r"\s*(?:,|/|&| and | x | feat\. | feat | ft\. | ft )\s*", flags=re.I)
-_ALBUM_SLUG_RE = re.compile(r"[^a-z0-9]+", flags=re.I)
+_ALBUM_SLUG_RE = re.compile(r"[^a-z0-9 ]+", flags=re.I)
 
 
 def _split_artists(value: str) -> list[str]:
@@ -187,17 +188,35 @@ def _slugify(value: str) -> str:
     s = (value or "").strip().lower()
     if not s:
         return ""
-    s = _ALBUM_SLUG_RE.sub("_", s)
+    s = s.replace("÷", " divide ").replace("&", " and ").replace("+", " plus ")
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")
+    s = _ALBUM_SLUG_RE.sub(" ", s)
+    s = re.sub(r"\s+", "_", s.strip())
     s = re.sub(r"_+", "_", s).strip("_")
     return s
 
 
-def _album_id(*, artist: str, album: str) -> str:
-    a = _slugify(artist)
+def _coerce_year(value) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        y = int(value)
+    except Exception:
+        return None
+    if y < 1000 or y > 2100:
+        return None
+    return y
+
+
+def _album_id(*, album: str, year: int | None) -> str:
     b = _slugify(album)
-    if not a or not b:
+    if not b:
         return ""
-    return f"album_{a}_{b}"
+    y = _coerce_year(year)
+    if y is not None:
+        return f"album_{b}_{y}"
+    return f"album_{b}"
 
 
 def _best_title_artist_album(*, audio_doc: dict, media, inferred_title: str, inferred_artist: str) -> tuple[str, str, str]:
@@ -338,7 +357,7 @@ async def _enrich_audio_doc(message: Message, media):
             audio_doc["artists"] = artists
     if album:
         audio_doc["album"] = album
-        aid = _album_id(artist=performer, album=album)
+        aid = _album_id(album=album, year=_coerce_year(audio_doc.get("year")))
         if aid:
             audio_doc["album_id"] = aid
 

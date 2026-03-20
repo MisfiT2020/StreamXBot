@@ -81,12 +81,26 @@ def _normalize_album_id_part(text: str) -> str:
     return s
 
 
-def _album_id(*, primary_artist: str, album: str) -> str:
-    a = _normalize_album_id_part(primary_artist)
+def _coerce_year(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        y = int(value)
+    except Exception:
+        return None
+    if y < 1000 or y > 2100:
+        return None
+    return y
+
+
+def _album_id(*, album: str, year: int | None) -> str:
     b = _normalize_album_id_part(album)
-    if not a or not b:
+    if not b:
         return ""
-    return f"album_{a}_{b}"
+    y = _coerce_year(year)
+    if y is not None:
+        return f"album_{b}_{y}"
+    return f"album_{b}"
 
 
 def _clean_url(value: object) -> str | None:
@@ -280,7 +294,6 @@ async def rebuild_albums_from_tracks(payload: RebuildAlbumsFromTracksRequest, _:
                     {"audio.album": {"$exists": True, "$ne": ""}},
                     {"audio.title": {"$exists": True, "$ne": ""}},
                 ],
-                "$or": [{"audio.artists": {"$exists": True, "$type": "array"}}, {"audio.artist": {"$exists": True, "$ne": ""}}, {"audio.performer": {"$exists": True, "$ne": ""}}],
             },
             {"audio": 1, "spotify.cover_url": 1, "spotify.big_cover_url": 1, "updated_at": 1},
         )
@@ -298,25 +311,12 @@ async def rebuild_albums_from_tracks(payload: RebuildAlbumsFromTracksRequest, _:
             continue
         album = album.strip()
 
-        artists: list[str] = []
-        raw_artists = audio.get("artists")
-        if isinstance(raw_artists, list):
-            for a in raw_artists:
-                if isinstance(a, str) and a.strip():
-                    artists.append(a.strip())
-        if not artists:
-            raw_artist = audio.get("artist") or audio.get("performer") or ""
-            if isinstance(raw_artist, str) and raw_artist.strip():
-                artists = _split_artists(raw_artist) or [raw_artist.strip()]
-
-        if not artists:
-            continue
-
         current = audio.get("album_id")
         if isinstance(current, str) and current.strip() and not force_album_id:
             continue
 
-        aid = _album_id(primary_artist=artists[0], album=album)
+        year = _coerce_year(audio.get("year"))
+        aid = _album_id(album=album, year=year)
         if not aid:
             continue
 
@@ -395,11 +395,12 @@ async def rebuild_albums_from_tracks(payload: RebuildAlbumsFromTracksRequest, _:
             artist = (row.get("artist") or "").strip()
             match_album = (row.get("match_album") or "").strip()
             match_artist = (row.get("match_artist") or "").strip()
-            if not title or not artist or not match_album or not match_artist:
+            if not title or not match_album:
                 continue
 
             cover_url = _clean_url(row.get("cover_url"))
-            artists = _split_artists(artist) or [artist]
+            artist_out = artist or None
+            artists = _split_artists(artist) if artist else []
             album_type = "single" if int(row.get("tracks_count") or 0) <= 1 else "album"
             ops.append(
                 UpdateOne(
@@ -408,14 +409,14 @@ async def rebuild_albums_from_tracks(payload: RebuildAlbumsFromTracksRequest, _:
                         "$setOnInsert": {"created_at": now},
                         "$set": {
                             "title": title,
-                            "artist": artist,
+                            "artist": artist_out,
                             "artists": artists if artists else None,
                             "cover_url": cover_url,
                             "tracks_count": int(row.get("tracks_count") or 0),
                             "duration_total": int(row.get("duration_total") or 0),
                             "type": album_type,
                             "match_album": match_album,
-                            "match_artist": match_artist,
+                            "match_artist": match_artist or None,
                             "updated_at": float(row.get("updated_at") or now),
                         },
                     },
