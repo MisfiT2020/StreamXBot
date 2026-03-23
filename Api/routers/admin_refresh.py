@@ -262,6 +262,8 @@ class RebuildAlbumsFromTracksRequest(BaseModel):
     rebuild_albums: bool = True
     limit_albums: int = 0
     clear_albums: bool = False
+    dedup_tracks: bool = True
+    dedup_limit_groups: int = 0
 
 
 @router.post("/albums/from-tracks")
@@ -282,6 +284,173 @@ async def rebuild_albums_from_tracks(payload: RebuildAlbumsFromTracksRequest, _:
     force_album_id = bool(payload.force_album_id)
 
     tracks_col = get_audio_tracks_collection()
+    dedup_groups = 0
+    dedup_duplicates = 0
+    dedup_deleted = 0
+    dedup_updated = 0
+
+    if bool(payload.dedup_tracks):
+        limit_groups = int(payload.dedup_limit_groups or 0)
+        if limit_groups <= 0:
+            limit_groups = 5000
+        if limit_groups > 50_000:
+            limit_groups = 50_000
+
+        pipeline = [
+            {
+                "$match": {
+                    "deleted": {"$ne": True},
+                    "content_hash": {"$type": "string", "$ne": ""},
+                }
+            },
+            {"$group": {"_id": "$content_hash", "ids": {"$push": "$_id"}, "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}},
+            {"$limit": int(limit_groups)},
+        ]
+        cur = await tracks_col.aggregate(pipeline)
+        async for row in cur:
+            if not isinstance(row, dict):
+                continue
+            ids = row.get("ids")
+            if not isinstance(ids, list) or len(ids) < 2:
+                continue
+
+            dedup_groups += 1
+            dedup_duplicates += int(len(ids))
+
+            docs: list[dict] = []
+            cursor = tracks_col.find(
+                {"_id": {"$in": ids}},
+                {
+                    "audio": 1,
+                    "spotify": 1,
+                    "lyrics": 1,
+                    "telegram": 1,
+                    "content_hash": 1,
+                    "fingerprint": 1,
+                    "source_chat_id": 1,
+                    "source_message_id": 1,
+                    "updated_at": 1,
+                    "deleted": 1,
+                },
+            )
+            async for d in cursor:
+                if isinstance(d, dict):
+                    docs.append(d)
+            if len(docs) < 2:
+                continue
+
+            def _score(doc: dict) -> tuple[int, float, str]:
+                audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
+                spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
+                score = 0
+                if isinstance(doc.get("lyrics"), str) and doc.get("lyrics", "").strip():
+                    score += 50
+                if isinstance(spotify.get("big_cover_url"), str) and spotify.get("big_cover_url", "").strip():
+                    score += 20
+                elif isinstance(spotify.get("cover_url"), str) and spotify.get("cover_url", "").strip():
+                    score += 10
+                if isinstance(audio.get("album_id"), str) and audio.get("album_id", "").strip():
+                    score += 5
+                if isinstance(audio.get("album"), str) and audio.get("album", "").strip():
+                    score += 2
+                if isinstance(audio.get("artist"), str) and audio.get("artist", "").strip():
+                    score += 1
+                updated_at = float(doc.get("updated_at") or 0.0)
+                return score, updated_at, str(doc.get("_id") or "")
+
+            docs.sort(key=lambda d: _score(d), reverse=True)
+            canonical = docs[0]
+            canonical_id = canonical.get("_id")
+            if canonical_id is None:
+                continue
+
+            merged_audio = canonical.get("audio") if isinstance(canonical.get("audio"), dict) else {}
+            merged_spotify = canonical.get("spotify") if isinstance(canonical.get("spotify"), dict) else {}
+            merged_telegram = canonical.get("telegram") if isinstance(canonical.get("telegram"), dict) else {}
+
+            file_ids: dict[str, str] = {}
+            file_id_variants: list[str] = []
+
+            def _add_file_id(val: object) -> None:
+                if isinstance(val, str) and val.strip():
+                    v = val.strip()
+                    if len(v) >= 2 and v[0] == "`" and v[-1] == "`":
+                        v = v[1:-1].strip()
+                    if v and v not in file_id_variants:
+                        file_id_variants.append(v)
+
+            for d in docs:
+                tel = d.get("telegram") if isinstance(d.get("telegram"), dict) else {}
+                _add_file_id(tel.get("file_id"))
+                ids_map = tel.get("file_ids") if isinstance(tel.get("file_ids"), dict) else {}
+                for k, v in ids_map.items():
+                    if isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip():
+                        file_ids[k.strip()] = v.strip()
+                        _add_file_id(v)
+
+                if not (isinstance(d.get("lyrics"), str) and d.get("lyrics", "").strip()) and isinstance(canonical.get("lyrics"), str):
+                    pass
+                else:
+                    if not (isinstance(canonical.get("lyrics"), str) and canonical.get("lyrics", "").strip()):
+                        if isinstance(d.get("lyrics"), str) and d.get("lyrics", "").strip():
+                            canonical["lyrics"] = d.get("lyrics")
+
+                aud = d.get("audio") if isinstance(d.get("audio"), dict) else {}
+                for k, v in aud.items():
+                    if k not in merged_audio or merged_audio.get(k) in ("", None, [], {}):
+                        if v not in ("", None, [], {}):
+                            merged_audio[k] = v
+
+                sp = d.get("spotify") if isinstance(d.get("spotify"), dict) else {}
+                for k in ("big_cover_url", "cover_url", "cover_source", "track_spotify_id", "url"):
+                    if k not in merged_spotify or merged_spotify.get(k) in ("", None, [], {}):
+                        vv = sp.get(k)
+                        if vv not in ("", None, [], {}):
+                            merged_spotify[k] = vv
+
+                if merged_telegram.get("dump_message_id") in (None, "", 0):
+                    dm = tel.get("dump_message_id")
+                    if dm not in (None, "", 0):
+                        merged_telegram["dump_message_id"] = dm
+
+            if file_ids:
+                merged_telegram["file_ids"] = file_ids
+            main_file_id = merged_telegram.get("file_id")
+            if not (isinstance(main_file_id, str) and main_file_id.strip()) and file_id_variants:
+                merged_telegram["file_id"] = file_id_variants[0]
+            if file_id_variants:
+                merged_telegram["file_id_variants"] = file_id_variants
+
+            set_doc: dict[str, object] = {"audio": merged_audio, "spotify": merged_spotify, "telegram": merged_telegram}
+            if isinstance(canonical.get("lyrics"), str) and canonical.get("lyrics", "").strip():
+                set_doc["lyrics"] = canonical.get("lyrics")
+            if canonical.get("source_chat_id") is None or canonical.get("source_message_id") is None:
+                for d in docs:
+                    if d.get("source_chat_id") is not None and d.get("source_message_id") is not None:
+                        set_doc["source_chat_id"] = d.get("source_chat_id")
+                        set_doc["source_message_id"] = d.get("source_message_id")
+                        break
+            set_doc["updated_at"] = time.time()
+
+            other_ids = [d.get("_id") for d in docs[1:] if d.get("_id") is not None and d.get("_id") != canonical_id]
+            if not dry_run:
+                await tracks_col.update_one({"_id": canonical_id}, {"$set": set_doc}, upsert=False)
+                dedup_updated += 1
+                if other_ids:
+                    res = await tracks_col.delete_many({"_id": {"$in": other_ids}})
+                    dedup_deleted += int(getattr(res, "deleted_count", 0) or 0)
+
+        if not dry_run:
+            try:
+                await tracks_col.create_index([("content_hash", 1)], unique=True, sparse=True)
+            except Exception:
+                pass
+            try:
+                await tracks_col.create_index([("fingerprint", 1)])
+            except Exception:
+                pass
+
     scanned = 0
     updated = 0
     bulk: list[UpdateOne] = []
@@ -439,6 +608,11 @@ async def rebuild_albums_from_tracks(payload: RebuildAlbumsFromTracksRequest, _:
         "ok": True,
         "dry_run": dry_run,
         "force_album_id": force_album_id,
+        "dedup_tracks": bool(payload.dedup_tracks),
+        "dedup_groups": int(dedup_groups),
+        "dedup_duplicates": int(dedup_duplicates),
+        "dedup_updated": int(dedup_updated),
+        "dedup_deleted": int(dedup_deleted),
         "scanned_tracks": int(scanned),
         "tracks_updated": int(updated),
         "albums_rebuilt": bool(payload.rebuild_albums),

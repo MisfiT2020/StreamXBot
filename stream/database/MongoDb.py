@@ -215,6 +215,12 @@ class MongoDatabase:
         except Exception:
             pass
         try:
+            audio_col = self.audio_collection.collection
+            await audio_col.create_index([("content_hash", 1)], unique=True, sparse=True)
+            await audio_col.create_index([("fingerprint", 1)])
+        except Exception:
+            pass
+        try:
             albums_col = self.get_collection("albums").collection
             await albums_col.create_index([("updated_at", -1)])
             await albums_col.create_index([("artist", 1)])

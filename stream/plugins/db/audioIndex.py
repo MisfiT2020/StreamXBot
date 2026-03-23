@@ -14,6 +14,7 @@ from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 from stream.helpers.dedup import metadata_fingerprint, sha256_prefix_file
 from stream.helpers.logger import LOGGER
+from pymongo.errors import DuplicateKeyError
 from stream.plugins.Analyzer.mediaHelper import (
     download_message_media,
     ensure_media_dir,
@@ -493,13 +494,41 @@ async def _enrich_audio_doc(message: Message, media):
     if not existing or existing.get("source_chat_id") is None or existing.get("source_message_id") is None:
         ensure_source = {"source_chat_id": message.chat.id, "source_message_id": message.id}
 
-    await col.update_one(
-        {"_id": target_id},
-        {
-            "$set": {**{k: v for k, v in payload.items() if v is not None}, **ensure_source},
-        },
-        upsert=True,
-    )
+    set_fields = {**{k: v for k, v in payload.items() if v is not None}, **ensure_source}
+    try:
+        await col.update_one({"_id": target_id}, {"$set": set_fields}, upsert=True)
+    except DuplicateKeyError:
+        dup = None
+        if content_hash:
+            try:
+                dup = await col.find_document({"content_hash": content_hash}, projection={"_id": 1})
+            except Exception:
+                dup = None
+        if not dup and fingerprint:
+            try:
+                dup = await col.find_document({"fingerprint": fingerprint}, projection={"_id": 1})
+            except Exception:
+                dup = None
+        if dup and dup.get("_id"):
+            target_id = dup["_id"]
+            ensure_source2 = {}
+            try:
+                existing3 = await col.read_document(
+                    target_id,
+                    projection={"_id": 1, "source_chat_id": 1, "source_message_id": 1},
+                )
+            except Exception:
+                existing3 = None
+            if not existing3 or existing3.get("source_chat_id") is None or existing3.get("source_message_id") is None:
+                ensure_source2 = {"source_chat_id": message.chat.id, "source_message_id": message.id}
+            await col.update_one({"_id": target_id}, {"$set": {**set_fields, **ensure_source2}}, upsert=False)
+            if target_id != file_unique_id:
+                try:
+                    await col.delete_document(file_unique_id)
+                except Exception:
+                    pass
+        else:
+            raise
 
     if target_id != file_unique_id:
         try:
