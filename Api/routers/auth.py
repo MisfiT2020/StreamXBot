@@ -309,6 +309,27 @@ async def auth_me(user_id: int = Depends(require_user_id)):
         pu = doc.get("photo_url")
         if isinstance(pu, str) and pu:
             doc["profile_url"] = pu
+
+    uid = int(user_id)
+    owner_set = set()
+    for v in (getattr(Config, "OWNER_ID", None) or []):
+        try:
+            owner_set.add(int(v))
+        except Exception:
+            pass
+            
+    sudo_set = set()
+    for v in (getattr(Config, "SUDO_USERS", None) or []):
+        try:
+            sudo_set.add(int(v))
+        except Exception:
+            pass
+            
+    if uid in owner_set:
+        doc["role"] = "owner"
+    elif uid in sudo_set:
+        doc["role"] = "sudo"
+
     return {"ok": True, "user": doc}
 
 @router.post("/fcm-token")
@@ -420,13 +441,14 @@ async def validate_account(
         "username_updated_at": now,
         "password_updated_at": now,
         "updated_at": now,
+        "telegram": {
+            "id": int(payload.userid),
+            "username": telegram_username,
+        },
     }
     set_on_insert = {
         "created_at": now,
-        "telegram": {"id": payload.userid, "username": telegram_username}
     }
-    if telegram_username:
-        updates["telegram"] = {"id": payload.userid, "username": telegram_username}
 
     await col.update_one(
         {"_id": payload.userid},

@@ -28,7 +28,7 @@ from Api.services.track_service import (
     random_tracks,
     search_tracks,
 )
-from Api.utils.auth import require_user_id, verify_auth_token
+from Api.utils.auth import require_admin_user_id, require_user_id, verify_auth_token
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 
@@ -117,6 +117,18 @@ def _clean_url(value: Any) -> str:
     if len(s) >= 2 and s[0] == "`" and s[-1] == "`":
         s = s[1:-1].strip()
     return s
+
+
+class ChannelItem(BaseModel):
+    id: int
+    title: str | None = None
+    username: str | None = None
+    type: str | None = None
+
+
+class ChannelIdsResponse(BaseModel):
+    ok: bool = True
+    items: list[ChannelItem]
 
 
 _APPLE_SIZE_RE = re.compile(r"/(\d+)x(\d+)(bb)?\.(jpg|jpeg|png|webp)$", flags=re.I)
@@ -727,26 +739,6 @@ async def _refresh_artists_cache(*, limit_tracks: int = 20000, limit_artists: in
     return {"scanned_tracks": scanned, "processed_artists": processed, "upserted": upserted}
 
 
-def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
-    uid = int(user_id)
-    owners = getattr(Config, "OWNER_ID", None) or []
-    sudos = getattr(Config, "SUDO_USERS", None) or []
-    allow: set[int] = set()
-    for v in (owners or []):
-        try:
-            allow.add(int(v))
-        except Exception:
-            pass
-    for v in (sudos or []):
-        try:
-            allow.add(int(v))
-        except Exception:
-            pass
-    if not allow:
-        raise HTTPException(status_code=403, detail="admin access not configured")
-    if uid not in allow:
-        raise HTTPException(status_code=403, detail="admin only")
-    return uid
 
 def _optional_user_id(request: Request) -> int | None:
     token = ""
@@ -1725,6 +1717,77 @@ async def track_stream(track_id: str, request: Request):
 @router.head("/tracks/{track_id}/stream")
 async def track_stream_head(track_id: str, request: Request):
     return await stream_track(track_id, request)
+
+
+@router.get("/channelids", response_model=ChannelIdsResponse)
+async def available_channel_ids():
+    tracks_col = get_audio_tracks_collection()
+    unique_ids_raw = await tracks_col.distinct("source_chat_id", {"deleted": {"$ne": True}})
+    
+    unique_ids = []
+    for cid in unique_ids_raw:
+        if cid is None:
+            continue
+        try:
+            unique_ids.append(int(cid))
+        except (TypeError, ValueError):
+            pass
+
+    if not unique_ids:
+        return ChannelIdsResponse(ok=True, items=[])
+
+    channels_col = db_handler.channels_collection.collection
+    cursor = channels_col.find({"_id": {"$in": unique_ids}}, {"_id": 1, "title": 1, "username": 1, "type": 1})
+    
+    channel_details = {}
+    async for doc in cursor:
+        try:
+            cid = int(doc.get("_id"))
+            channel_details[cid] = doc
+        except Exception:
+            continue
+
+    try:
+        from stream import bot
+    except ImportError:
+        bot = None
+
+    items: list[ChannelItem] = []
+    for cid in set(unique_ids):
+        doc = channel_details.get(cid, {})
+        title = doc.get("title")
+        username = doc.get("username")
+        ctype = doc.get("type")
+        
+        if not title and bot is not None:
+            try:
+                chat = await bot.get_chat(cid)
+                title = getattr(chat, "title", title)
+                username = getattr(chat, "username", username)
+                ctype_enum = getattr(chat, "type", None)
+                ctype = getattr(ctype_enum, "name", str(ctype_enum)) if ctype_enum else ctype
+                
+                try:
+                    await channels_col.update_one(
+                        {"_id": cid},
+                        {"$set": {"title": title, "username": username, "type": ctype}},
+                        upsert=True
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        items.append(
+            ChannelItem(
+                id=cid,
+                title=str(title).strip() if isinstance(title, str) and title.strip() else None,
+                username=str(username).strip() if isinstance(username, str) and username.strip() else None,
+                type=str(ctype).strip() if isinstance(ctype, str) and ctype.strip() else None,
+            )
+        )
+        
+    return ChannelIdsResponse(ok=True, items=items)
 
 
 @router.get("/tracks/{track_id}/download")

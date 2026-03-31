@@ -22,6 +22,8 @@ from Api.routers.friends import router as friends_router
 from Api.routers.notifications import router as notifications_router
 from Api.routers.presence import router as presence_router
 from Api.routers.soundcloud import router as soundcloud_router
+from Api.routers.logs import router as logs_router
+from Api.routers.yt_dlp import router as yt_dlp_router
 
 from stream.core.config_manager import Config
 
@@ -41,7 +43,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-# Mount assets only if they exist (prevents startup crash)
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
@@ -73,6 +74,8 @@ app.include_router(notifications_router)
 app.include_router(presence_router)
 app.include_router(share_router)
 app.include_router(soundcloud_router)
+app.include_router(logs_router)
+app.include_router(yt_dlp_router)
 
 
 

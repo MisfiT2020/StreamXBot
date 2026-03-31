@@ -118,3 +118,25 @@ def require_user_id(
             token = (request.cookies.get("token") or "").strip()
     payload = verify_auth_token(token)
     return int(payload["uid"])
+
+
+def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
+    uid = int(user_id)
+    owners = getattr(Config, "OWNER_ID", None) or []
+    sudos = getattr(Config, "SUDO_USERS", None) or []
+    allow: set[int] = set()
+    for v in (owners or []):
+        try:
+            allow.add(int(v))
+        except Exception:
+            pass
+    for v in (sudos or []):
+        try:
+            allow.add(int(v))
+        except Exception:
+            pass
+    if not allow:
+        raise HTTPException(status_code=403, detail="admin access not configured")
+    if uid not in allow:
+        raise HTTPException(status_code=403, detail="admin only")
+    return uid
