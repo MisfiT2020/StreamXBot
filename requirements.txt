@@ -16,4 +16,4 @@ python-multipart
 pillow
 psutil
 firebase-admin
-yt-dlp
+yt-dlp[default]

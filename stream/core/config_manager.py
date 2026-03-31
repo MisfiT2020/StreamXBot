@@ -59,6 +59,8 @@ class Config:
     MULTI_CLIENTS_3 = ""
     MULTI_CLIENTS_4 = ""
     MULTI_CLIENT_TOKENS: list[str] = []
+    COOKIES_DIR = "cookies/"  
+
 
     @classmethod
     def _is_secret_key(cls, key: str) -> bool:

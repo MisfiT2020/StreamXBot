@@ -21,6 +21,10 @@ from stream import BotStartTime
 from stream.helpers.filters import *
 from stream.core.config_manager import Config
 from stream.helpers.functions import get_readable_bytes, get_readable_time
+from stream.database.MongoDb import db_handler
+
+COOKIES_DIR = Config.COOKIES_DIR
+os.makedirs(COOKIES_DIR, exist_ok=True)
 
 edit_states = {}
 user_states = {}
@@ -83,6 +87,7 @@ async def admin_handler(client, message: Message):
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Config", callback_data="config"),
+            InlineKeyboardButton("Cookies", callback_data="cookies")
         ],
         [
             InlineKeyboardButton("Stats", callback_data="stats"),
@@ -100,11 +105,13 @@ async def admin_handler(client, message: Message):
 async def sys_callback(client, callback_query: CallbackQuery):
     await handle_config(callback_query)
 
-@Client.on_callback_query(filters.regex("^(stats|database|refresh|back_main)$") & dev_cmd)
+@Client.on_callback_query(filters.regex("^(cookies|stats|database|refresh|back_main)$") & dev_cmd)
 async def system_callback(client, callback_query: CallbackQuery):
     cmd = callback_query.data
     try:
-        if cmd == "stats":
+        if cmd == "cookies":
+            await handle_cookies(callback_query)
+        elif cmd == "stats":
             await handle_stats(callback_query)
         elif cmd == "database":
             await handle_database(callback_query)
@@ -148,6 +155,58 @@ async def handle_config(callback_query: CallbackQuery):
         ),
         reply_markup=keyboard
     )
+
+@Client.on_message(filters.document & filters.user(Config.OWNER_ID))
+async def handle_cookie_upload(client, message: Message):
+    if message.from_user.id not in user_states:
+        return
+
+    document = message.document
+    if not document.file_name.endswith(".txt"):
+        await message.reply("Only .txt files are allowed.")
+        return
+
+    try:
+        file_path = os.path.join(COOKIES_DIR, document.file_name)
+        await message.download(file_path)
+        
+        if os.path.exists(file_path):
+            await message.reply(f"Cookies file saved: {file_path}")
+        else:
+            await message.reply("Failed to save cookie file")
+            
+        await message.delete()
+
+        original_message_id = user_states.pop(message.from_user.id)
+        await client.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=original_message_id,
+            text="Admin Panel:",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Config", callback_data="config"),
+                    InlineKeyboardButton("Cookies", callback_data="cookies")
+                ],
+                [
+                    InlineKeyboardButton("Stats", callback_data="stats"),
+                    InlineKeyboardButton("Database", callback_data="database")
+                ]
+            ])
+        )
+    except Exception as e:
+        await message.reply(f"Error: {e}")
+
+async def handle_cookies(callback_query: CallbackQuery):
+    await callback_query.message.edit_media(
+        media=InputMediaPhoto(
+            random.choice(BOTSETTINGS_IDS),
+            caption="Send .txt file for cookies storage\nExample: yt.txt"
+        ),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Back", callback_data="refresh")]
+        ])
+    )
+    user_states[callback_query.from_user.id] = callback_query.message.id
 
 async def handle_stats(callback_query: CallbackQuery):
     start_time = time.time()
@@ -196,16 +255,19 @@ async def handle_stats(callback_query: CallbackQuery):
     os.remove("stats_temp.png")
 
 async def handle_database(callback_query: CallbackQuery):
-    TotalUsers = await db_handler.users.total_documents()
-    TotalChats = await db_handler.chats_collection.total_documents()
-    TotalChannels = await db_handler.channels_collection.total_documents()
-    
-    stats_string = (
-        "**Database Statistics**\n\n"
-        f"• Users: {TotalUsers}\n"
-        f"• Chats: {TotalChats}\n"
-        f"• Channels: {TotalChannels}"
-    )
+    try:
+        TotalUsers = await db_handler.users.total_documents()
+        TotalChats = await db_handler.chats_collection.total_documents()
+        TotalChannels = await db_handler.channels_collection.total_documents()
+        
+        stats_string = (
+            "**Database Statistics**\n\n"
+            f"• Users: {TotalUsers}\n"
+            f"• Chats: {TotalChats}\n"
+            f"• Channels: {TotalChannels}"
+        )
+    except Exception as e:
+        stats_string = f"**Database Statistics**\n\nError: {str(e)}"
     
     await callback_query.message.edit_media(
         media=InputMediaPhoto(
@@ -221,6 +283,8 @@ async def refresh_panel(callback_query: CallbackQuery):
     
     if callback_query.from_user.id in edit_states:
         del edit_states[callback_query.from_user.id]
+    if callback_query.from_user.id in user_states:
+        del user_states[callback_query.from_user.id]
 
     
     await callback_query.message.edit_media(
@@ -231,6 +295,7 @@ async def refresh_panel(callback_query: CallbackQuery):
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Config", callback_data="config"),
+                InlineKeyboardButton("Cookies", callback_data="cookies")
             ],
             [
                 InlineKeyboardButton("Stats", callback_data="stats"),
@@ -270,6 +335,8 @@ async def back_main(client: Client, query: CallbackQuery):
     
     if query.from_user.id in edit_states:
         del edit_states[query.from_user.id]
+    if query.from_user.id in user_states:
+        del user_states[query.from_user.id]
 
     
     await query.message.edit_media(
@@ -280,6 +347,7 @@ async def back_main(client: Client, query: CallbackQuery):
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Config", callback_data="config"),
+                InlineKeyboardButton("Cookies", callback_data="cookies")
             ],
             [
                 InlineKeyboardButton("Stats", callback_data="stats"),
