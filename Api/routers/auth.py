@@ -163,10 +163,8 @@ async def tg_login(
         "first_name": tg.get("first_name"),
         "photo_url": tg.get("photo_url"),
         "profile_url": tg.get("photo_url"),
-        "telegram": {
-            "id": tg_user_id,
-            "username": tg.get("username"),
-        },
+        "telegram.id": tg_user_id,
+        "telegram.username": tg.get("username"),
         "updated_at": now,
     }
     set_on_insert = {"created_at": now}
@@ -441,10 +439,8 @@ async def validate_account(
         "username_updated_at": now,
         "password_updated_at": now,
         "updated_at": now,
-        "telegram": {
-            "id": int(payload.userid),
-            "username": telegram_username,
-        },
+        "telegram.id": int(payload.userid),
+        "telegram.username": telegram_username,
     }
     set_on_insert = {
         "created_at": now,
