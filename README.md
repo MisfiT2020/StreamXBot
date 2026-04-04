@@ -1,245 +1,347 @@
 <div align="center">
   <p>
-    <img src="Assets/cover.jpg" alt="cover" width="300" />
+    <img src="./Assets/cover.jpg" alt="StreamX cover preview" width="320" />
   </p>
-  <h2>StreamXBot</h2>
-  <p>A Self Hosted Telegram WebApp Streaming bot that lets you listen to music directly in the browser, even without Telegram. (free of cost)</p>
+  <h1>StreamX</h1>
+  <p>StreamX is a self-hosted music platform that manage your personal library and YouTube Music into one fast, modern experience across Android, web</p>
+  <p>Stream, download, and organize your music with ease — from albums and artists to playlists and live jam sessions with friends.</p>
+  <p>No ads. No tracking. Just complete control.</p>
   <p>
-    • <code>Frontend: <a href="https://github.com/MisfiT2020/StreamXWeb">MisfiT2020/StreamXWeb</a></code><br>
-    • <code>Support: <a href="https://t.me/RaidenEiSupport">Group</a></code>
+    <a href="https://github.com/MisfiT2020/StreamXBot/releases">
+      <img src="https://img.shields.io/badge/Releases-Android%20Builds-111827?style=for-the-badge&logo=github&logoColor=white" alt="Releases" />
+    </a>
+    <a href="https://t.me/RaidenEISupport">
+      <img src="https://img.shields.io/badge/Support%20Group-Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Support Group" />
+    </a>
   </p>
-
-  <p align="center">
-    <a href="https://render.com/deploy">
+  <p>
+    <a href="https://render.com/deploy?repo=https://github.com/MisfiT2020/StreamXBot">
       <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render" />
     </a>
   </p>
-
-  <p align="center">
-    <a href="https://cron.raiden.ovh">
-      <img src="https://img.shields.io/badge/Cron-FFFFFF?style=for-the-badge&logo=clockify&logoColor=000000&labelColor=FFFFFF&color=FFFFFF" alt="Cron" />
-    </a>
-  </p>
-
-  <p>
-    <small>
-      Register your Render deployment URL at <a href="https://cron.raiden.ovh">Cron</a> to keep your service awake and avoid cold starts.
-    </small>
-  </p>
 </div>
 
----
+## Overview
 
+StreamX is split into three projects that ship one experience:
+
+- `stream`: the root backend, API, Telegram ingit add .
+gestion layer, sharing routes, and deployment entrypoint
+- `StreamX/`: the Android app
+- `StreamXWeb/`: the React web client
+
+The result is a full self-hosted music platform with private infrastructure, cross-device playback, social features, share links, and polished clients on both mobile and web.
 
 ## Features
 
-- Telegram-free web app: use StreamX directly in the browser, even without Telegram.
-- Fast music discovery with browse, search, and shuffle modes.
-- Curated daily playlists plus playlist-based exploration.
-- Smooth track streaming with quick warm-up playback support.
-- Built-in lyrics view for supported songs.
-- Personal listening space with favourites and top-played history.
-- Create, edit, and manage your own custom playlists.
-- Real-time Jam rooms for synchronized group listening and queue control.
+### Playback And Library
 
-## Preview
+- fast playback with queue controls, play next, repeat, shuffle, and rich full-player interactions
+- favourites, saved albums, custom playlists, shared playlists, and top-played flows
+- album, artist, track, and playlist navigation across both backend and provider-native content
+- seamless switching between the StreamX backend library and the YouTube provider inside the app
+- YouTube track syncing so songs discovered on YouTube can be brought into StreamX
+- offline downloads with download management and remove-download actions
+- expanded player views with metadata, next queue, lyrics, and quick actions
+
+### Lyrics, Discovery, And UI
+
+- synced lyrics and dedicated lyrics view
+- artist pages, album pages, playlist pages, and search-driven discovery
+- direct YouTube search, provider-native YouTube browse flows, and quick provider switching on Android
+- customizable UI with polished cards, home sections, dark mode, and AMOLED-style presentation
+- polished Compose-based UI with full-screen player, bottom sheets, and modern navigation
+
+### Social And Sharing
+
+- collaborative jam sessions with synchronized playback and queue updates
+- jam invites, join flows, cooldown handling, and push notifications
+- friends, presence, listening activity, and share-listening controls
+- share links for playlists, albums, tracks, and jams
+
+## Screenshots
 
 | 1 | 2 | 3 |
-|---|---|---|
-| ![1](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/1.jpg) | ![2](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/2.jpg) | ![3](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/3.jpg) |
+| --- | --- | --- |
+| ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/1.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/2.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/3.jpg) |
 
 | 4 | 5 | 6 |
-|---|---|---|
-| ![4](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/4.jpg) | ![5](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/5.jpg) | ![6](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/7.jpg) |
+| --- | --- | --- |
+| ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/4.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/5.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/6.jpg) |
 
 | 7 | 8 | 9 |
-|---|---|---|
-| ![7](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/8.jpg) | ![8](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/9.jpg) | ![9](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/10.jpg) |
+| --- | --- | --- |
+| ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/7.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/8.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/9.jpg) |
 
 | 10 | 11 | 12 |
-|---|---|---|
-| ![10](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/11.jpg) | ![11](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/12.jpg) | ![12](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/13.jpg) |
+| --- | --- | --- |
+| ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/10.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/11.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/12.jpg) |
 
-| 13 | 14 | 15 |
-|---|---|---|
-| ![13](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/16.jpg) | ![14](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/17.jpg) | ![15](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/18.png) |
+| 13 | 14 |  |
+| --- | --- | --- |
+| ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/13.jpg) | ![](https://raw.githubusercontent.com/MisfiT2020/src/main/streamx/app/14.jpg) |  |
 
-## API REQUIRED
-- [Cloudinary](https://cloudinary.com/) for thumbnail storage.
-- [Spotify API](https://developer.spotify.com/) for music metadata.
+## Project Layout
 
+| Project | Role | Stack | Docs |
+| --- | --- | --- | --- |
+| `stream` | Backend, API, sharing, deployment | Python, FastAPI, MongoDB, Telegram, Firebase Admin | [README.md](./README.md) |
+| `StreamX/` | Android app | Kotlin, Jetpack Compose, Media3, Firebase Messaging | [StreamX/README.md](./StreamX/README.md) |
+| `StreamXWeb/` | Web app | React, Vite, TypeScript | [StreamXWeb/README.md](./StreamXWeb/README.md) |
 
-## BOT COMMANDS
+## Releases
 
-- /ping - Ping the bot to check if it's alive.
-- /bs - to get the bot settings and edit the vars without deploying again.
-- /restart - to restart the bot.
+- Android APK builds are published in the root repo's [Releases](https://github.com/MisfiT2020/StreamXBot/releases)
+- `StreamXWeb` is built and served by the backend in normal production deployments
+- backend deployment is source-based or Docker-based depending on your environment
 
+## Quick Start
 
-## Configuration
+### 1. Start the backend
 
-<details>
-<summary>Show</summary>
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy sample_config.py config.py
+python -m stream
+```
 
-<details>
-<summary>API RELATED</summary>
+Or with Docker:
 
-- `SPOTIFY_CLIENT_ID` (Spotify API client ID)
-- `SPOTIFY_CLIENT_SECRET` (Spotify API client secret)
-- `CLOUDINARY_CLOUD_NAME` (Cloudinary cloud name)
-- `CLOUDINARY_API_KEY` (Cloudinary API key)
-- `CLOUDINARY_API_SECRET` (Cloudinary API secret)
+```bash
+docker compose up --build
+```
 
-</details>
+### 2. Build the Android app
 
-<details>
-<summary>BOT RELATED</summary>
+```bash
+cd StreamX
+.\gradlew.bat :app:assembleDebug
+.\gradlew.bat :app:installDebug
+```
 
-- `BOT_TOKEN` (Telegram bot token, `123456:ABC...`)
-- `API_ID` (integer)
-- `API_HASH` (string)
+Before the first build, place `google-services.json` at `StreamX/app/google-services.json`.
 
-</details>
+### 3. Run the web app locally
 
-<details>
-<summary>BACKEND RELATED</summary>
+```bash
+cd StreamXWeb
+npm install
+npm run dev
+```
 
-- `CHANNEL_ID` to fetch the tracks from.
-- `MONGO_URI` (`mongodb://...` or `mongodb+srv://...`)
-- `OWNER_ID` (one ID or a list; the loader turns it into a list)
-- `DATABASE_NAME` 
-- `MULTI_CLIENT` (True/False) to stream via multiple Bots and load balancing
-- `MULTI_CLIENTS_1`, `MULTI_CLIENTS_2`, ... (additional bot tokens/session strings for multi-client mode)
-- `MUSIXMATCH`OR `LRCLIB` to get lyrics: MUSIXMATCH OVERRIDES LRCLIB
-- `DUMP_CHANNEL_ID` Dumps the Tracks into this channel when multiclient bot doesn't have the track in its database.
-- `SUDO_USERS` (user with sudo access)
-- `ONLY_API` (True/False) to only use the API and disable the bot.
-- `DEBUG` (True/False) to enable debug mode.
+For production, `StreamXWeb` is usually not deployed separately. The backend Dockerfile already builds and serves it.
 
-</details>
+## Backend Overview
 
-<details>
-<summary>SESSION RELATED (FRONTEND) (Optional)</summary>
+This root project powers:
 
-- `SECRET_KEY` (for session storage)
-- `COOKIE_SECURE` (True/False) to enable secure cookies.
-- `CORS_ORIGIN` to allow domain
-- `COOKIE_SAMESITE` if the backend/frontend are on different domains, set this to `none` and `COOKIE_SECURE` to `true`.
+- auth, playlists, favourites, albums, tracks, friends, jams, and notifications
+- Telegram ingestion and admin tooling
+- media streaming endpoints
+- playlist, album, track, and jam share routes
+- production serving of the built web app
 
-</details>
+Main entrypoint:
 
-<details>
-<summary>USERBOT</summary>
+```bash
+python -m stream
+```
 
-- `SESSION_STRING` (enables the userbot worker)
-- `SOURCE_CHANNEL_IDS` for userbot to dump tracks from one or more channels.
+You can run it in:
 
-</details>
-
-</details>
-
----
+- API-only=True mode disables the bot's runtime, which is useful for testing  
 
 ## Deployment
 
-Fork this repo, then clone your fork for deployment (so your own changes and secrets stay in your repo).
+### Local Python
 
-- **Render & Heroku**: `CONFIG_GIST` – provide a raw GitHub Gist URL that contains a complete `config.py`.  
-  At build time the gist is downloaded and written to `config.py`, letting you keep secrets out of the repo.
+Requirements:
 
+- Python 3.11+
 
-<details>
-<summary>Render (recommended)</summary>
-
-Create a new **Web Service**:
-
-- Runtime: Docker
-- Build command: (Render detects Dockerfile)
-- Start command: default (runs `start.sh`)
-
-Set environment variables in Render dashboard:
-
-- Required: `CONFIG_GIST` with a raw GitHub Gist URL that contains a complete `config.py`.
-- For frontend: set `CORS_ORIGINS` to your frontend domain (example: `https://your-frontend.vercel.app`)
-
-</details>
-
-<details>
-<summary>VPS (Docker Compose)</summary>
-
-1. Install Docker + Docker Compose on the VPS
-2. Clone the backend repo
-3. Copy `sample_config.py` to `config.py` and fill in the required variables
-4. Run:
-
-</details>
-
-<details>
-<summary>Heroku (GitHub Actions + Docker)</summary>
-
-This repo ships a workflow: [heroku-docker.yml](https://github.com/MisfiT2020/StreamXBot/blob/main/.github/workflows/heroku-docker.yml).
-
-Behavior:
-
-- If Heroku secrets are present, it builds/pushes/releases the Docker image
-- If secrets are missing, it skips Heroku steps and the workflow still passes
-
-To enable Heroku deploy, add GitHub repo secrets:
-
-- `HEROKU_APP_NAME`
-- `HEROKU_API_KEY` (or `HEROKU_KEY`)
-
-Optional:
-
-- `CONFIG_GIST` = a raw GitHub Gist URL pointing to a `config.py`-style file. If set, the workflow converts it into Heroku config vars and applies them before releasing.
-
-</details>
-
-## Quick health check
-
-Once deployed, the API should respond:
-
-- `GET /health` → `{"status":"ok", ...}` (see [health.py](https://github.com/MisfiT2020/StreamXBot/blob/main/Api/routers/health.py))
-
-Example:
+Run:
 
 ```bash
-curl -sS https://YOUR_BACKEND_URL/health
+python -m venv .venv
+.venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+copy sample_config.py config.py
+python -m stream
 ```
 
----
+### Docker
 
-## Frontend deployment (Vite / Vercel / Netlify)
+The root `Dockerfile` already:
 
-Frontend source in [MisfiT2020/StreamXWeb](https://github.com/MisfiT2020/StreamXWeb) and calls this backend.
+1. builds `StreamXWeb`
+2. installs Python dependencies
+3. copies backend code
+4. copies the built web `dist/`
+5. starts the app through `start.sh`
 
-### Required frontend env var
+Run:
 
-Set this in your frontend build env:
+```bash
+docker compose up --build -d
+```
 
-- `VITE_API_BASE_URL` = your backend base URL
+### Render
 
-## BOT CONFIGURATION
-Follow these steps to set MiniApp in the bot:
+This repo can be used for other service (free) such as koyeb.
 
-- Open your bot on BotFather
-- Go to Bot Settings > Configure Mini App > Edit Mini App URL 
-- Set the Mini App URL to your frontend domain (example: `https://your-frontend.vercel.app`)
-- Go to Change Mode > Set it to "Full Screen" for better experience.
+Typical Render flow:
 
-<details>
-<summary>Screenshots</summary>
+1. create a Docker web service
+2. point it at this repo
+3. set `CONFIG_GIST` to a raw URL that returns your full `config.py`
+4. deploy
 
-| 1 |
-| --- |
-| ![1](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot1.jpg) |
+One-click shortcut:
 
-| 2 | 3 | 4 |
-|---|---|---|
-| ![2](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot2.jpg) | ![3](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot3.jpg) | ![4](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot4.jpg) |
+- [Deploy to Render](https://render.com/deploy?repo=https://github.com/MisfiT2020/StreamXBot)
 
-| 5 | 6 | 7 |
-|---|---|---|
-| ![5](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot5.jpg) | ![6](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot6.jpg) | ![7](https://github.com/MisfiT2020/src/blob/407ebb02fa3bf94e75dccaae4fecefcfb95029d2/streamx/bot7.jpg) |
+Health check:
 
-</details>
+```text
+GET /health
+```
+
+## Main Config
+
+Use `sample_config.py` as the template for `config.py`.
+
+### Core values for most full installs
+
+| Key | Purpose |
+| --- | --- |
+| `BOT_TOKEN` | Telegram bot token |
+| `API_ID` | Telegram API ID |
+| `API_HASH` | Telegram API hash |
+| `MONGO_URI` | MongoDB connection string |
+| `DATABASE_NAME` | MongoDB database name |
+| `OWNER_ID` | Telegram owner ID |
+| `SECRET_KEY` | Session signing and Firebase credential decoding |
+| `CHANNEL_ID` | Main Telegram source channel |
+
+### Common optional values
+
+| Key | Purpose |
+| --- | --- |
+| `FIREBASE_CREDENTIALS` | Encoded Firebase Admin service account |
+| `CORS_ORIGINS` | Allowed frontend origins |
+| `COOKIE_SECURE` | Secure cookie flag for HTTPS |
+| `COOKIE_SAMESITE` | Cross-site cookie policy |
+| `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | Spotify metadata integration |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Cover uploads and hosting |
+| `SESSION_STRING` | Optional userbot session |
+| `SOURCE_CHANNEL_IDS` | Additional Telegram source channels |
+| `DUMP_CHANNEL_ID` | Optional dump channel |
+| `LRCLIB` / `MUSIXMATCH` | Lyrics provider toggles |
+| `MULTI_CLIENTS`, `MULTI_CLIENTS_1...` | Extra Telegram clients or tokens |
+
+### API-only mode
+
+If you only want the API:
+
+```python
+ONLY_API = True
+```
+
+In that mode the important requirements are:
+
+- `MONGO_URI`
+- `DATABASE_NAME`
+- `SECRET_KEY`
+
+## Firebase Setup For The Backend
+
+The backend uses Firebase Admin to send push notifications. This is different from the Android device token.
+
+### What you need
+
+You need a Firebase service account JSON from:
+
+1. Firebase Console
+2. Project settings
+3. Service accounts
+4. Generate new private key
+
+Save that file as `service_account.json` in the root of this repo.
+
+### How to use `encode_firebase.py`
+
+This repo includes `encode_firebase.py` so you can store an encoded value in `config.py` instead of raw JSON.
+
+Steps:
+
+1. put the downloaded file at `service_account.json`
+2. make sure `SECRET_KEY` is already set in `config.py`
+3. run:
+
+```bash
+python encode_firebase.py
+```
+
+4. copy the printed output into:
+
+```python
+FIREBASE_CREDENTIALS = "..."
+```
+
+### Alternate Firebase env option
+
+The backend also supports:
+
+```text
+FIREBASE_CRED_B64
+```
+
+That should be plain base64 of the raw Firebase service account JSON.
+
+### Firebase value checklist
+
+| Item | Used by | Where you get it |
+| --- | --- | --- |
+| `service_account.json` / `FIREBASE_CREDENTIALS` / `FIREBASE_CRED_B64` | Backend push sending | Firebase Console -> Project settings -> Service accounts |
+| `google-services.json` | Android app build setup | Firebase Console -> Project settings -> Your apps -> Android |
+| FCM device token | Individual Android device | Generated automatically by the app |
+
+Do not paste the device FCM token into backend config. The Android client obtains it automatically and registers it after login.
+
+## YouTube Cookies
+
+Backend-side YouTube extraction looks for:
+
+```text
+cookies/yt.txt
+```
+
+Use it when you need stronger `yt-dlp` access for restricted or rate-limited content.
+
+### How to prepare it
+
+1. log in to YouTube in a desktop browser
+2. export cookies in Netscape format
+3. save the file as `cookies/yt.txt`
+
+Notes:
+
+- keep the file private and never commit it
+- you can upload the cookies directly via telegram bot using /sudo > cookies > save cookies as yt.txt and upload.
+
+## Support
+
+- Support group: [t.me/RaidenEISupport](https://t.me/RaidenEISupport)
+
+## Thanks
+
+- Metrolist for innertube & reference
+
+## Project Docs
+
+- Root backend and deployment: [README.md](./README.md)
+- Android app: [StreamX/README.md](./StreamX/README.md)
+- Web app: [StreamXWeb/README.md](./StreamXWeb/README.md)

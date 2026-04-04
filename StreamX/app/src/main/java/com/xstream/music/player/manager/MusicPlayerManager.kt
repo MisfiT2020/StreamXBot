@@ -1557,7 +1557,6 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                         requestBuilder.header("User-Agent", PLAYBACK_HTTP_USER_AGENT)
                     }
 
-                    // Add ngrok bypass header for development/testing
                     if (originalRequest.url.host.contains("ngrok")) {
                         requestBuilder.header("ngrok-skip-browser-warning", "true")
                     }
