@@ -29,6 +29,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
@@ -43,6 +44,11 @@ import kotlinx.coroutines.runBlocking
 import java.net.HttpURLConnection
 import java.net.URL
 import java.lang.ref.WeakReference
+import java.io.IOException
+import java.net.Proxy
+import java.net.ProxySelector
+import java.net.SocketAddress
+import java.net.URI
 import com.metrolist.innertube.YouTube
 
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -53,6 +59,7 @@ import kotlin.math.abs
 import com.xstream.music.core.cache.DataCache
 import com.xstream.music.core.preferences.AuthPreferences
 import com.xstream.music.core.preferences.PlaybackPreferences
+import androidx.media3.datasource.TransferListener
 import com.xstream.music.core.utils.DownloadHelper
 import com.xstream.music.core.utils.PlaybackException
 import com.xstream.music.data.api.ApiPreferences
@@ -271,13 +278,18 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val currentMediaItem = player.currentMediaItem
+                val streamUrl = currentMediaItem?.localConfiguration?.uri?.toString() ?: "unknown"
                 Timber.e(error, "ExoPlayer Error: ${error.message}")
+                Timber.e("Failed stream URL: $streamUrl")
+                Timber.e("Track ID: ${currentSong.value?.id}, Title: ${currentSong.value?.title}")
 
                 clearPlayerLoading()
                 isPlaying.value = false
                 cancelPlaybackRecovery()
 
                 val trackId = currentSong.value?.id ?: "queue_index_$currentIndex"
+                clearCachedMediaResource(trackId)
                 if (trackId.startsWith("yt_") || trackId.startsWith("sc_")) {
                     clearCachedResolvedStreamUrl(trackId)
                 }
@@ -691,7 +703,8 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             preResolveSpecialStreamUrl = preResolveStreamUrl
         )
         
-        Timber.d("Building media item for track: ${song.title} - Thumbnail: ${song.coverUrl}")
+        Timber.d("Building media item for track: ${song.title} - Stream URL: $streamUrl")
+        Timber.d("Track ID: ${song.id}, Has token: ${token != null}")
         
         val mediaMetadata = MediaMetadata.Builder()
             .setTitle(song.title)
@@ -1503,9 +1516,37 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
         private val resolvedStreamUrlCache = mutableMapOf<String, CachedResolvedStreamUrl>()
 
+        private fun shouldUsePlaybackProxy(host: String?): Boolean {
+            val normalizedHost = host?.lowercase()?.trim().orEmpty()
+            if (normalizedHost.isBlank()) return false
+
+            return normalizedHost == "youtube.com" ||
+                normalizedHost.endsWith(".youtube.com") ||
+                normalizedHost.endsWith(".googlevideo.com") ||
+                normalizedHost.endsWith(".ytimg.com") ||
+                normalizedHost.endsWith(".googleusercontent.com")
+        }
+
+        private fun createPlaybackProxySelector(): ProxySelector {
+            val playbackProxy = YouTube.proxy
+
+            return object : ProxySelector() {
+                override fun select(uri: URI): List<Proxy> {
+                    if (playbackProxy == null || !shouldUsePlaybackProxy(uri.host)) {
+                        return listOf(Proxy.NO_PROXY)
+                    }
+                    return listOf(playbackProxy)
+                }
+
+                override fun connectFailed(uri: URI, sa: SocketAddress, ioe: IOException) {
+                    Timber.w(ioe, "Playback proxy connection failed for $uri")
+                }
+            }
+        }
+
         private fun createPlaybackHttpClient(): OkHttpClient {
             return OkHttpClient.Builder()
-                .proxy(YouTube.proxy)
+                .proxySelector(createPlaybackProxySelector())
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .addInterceptor { chain ->
@@ -1516,13 +1557,85 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                         requestBuilder.header("User-Agent", PLAYBACK_HTTP_USER_AGENT)
                     }
 
+                    // Add ngrok bypass header for development/testing
+                    if (originalRequest.url.host.contains("ngrok")) {
+                        requestBuilder.header("ngrok-skip-browser-warning", "true")
+                    }
+
                     YouTube.proxyAuth
-                        ?.takeIf { it.isNotBlank() && originalRequest.header("Proxy-Authorization").isNullOrBlank() }
+                        ?.takeIf {
+                            shouldUsePlaybackProxy(originalRequest.url.host) &&
+                                it.isNotBlank() &&
+                                originalRequest.header("Proxy-Authorization").isNullOrBlank()
+                        }
                         ?.let { requestBuilder.header("Proxy-Authorization", it) }
 
                     chain.proceed(requestBuilder.build())
                 }
                 .build()
+        }
+
+        private fun shouldUseCachedPlaybackSource(dataSpec: DataSpec): Boolean {
+            val cacheKey = dataSpec.key.orEmpty()
+            if (cacheKey.startsWith("yt_") || cacheKey.startsWith("sc_")) {
+                return true
+            }
+
+            return when (dataSpec.uri.scheme?.lowercase()) {
+                "ytstream", "scstream" -> true
+                else -> false
+            }
+        }
+
+        private class RoutingPlaybackDataSource(
+            private val directDataSource: DataSource,
+            private val cachedDataSource: DataSource
+        ) : DataSource {
+            private var selectedDataSource: DataSource? = null
+
+            override fun addTransferListener(transferListener: TransferListener) {
+                directDataSource.addTransferListener(transferListener)
+                cachedDataSource.addTransferListener(transferListener)
+            }
+
+            override fun open(dataSpec: DataSpec): Long {
+                val delegate = if (shouldUseCachedPlaybackSource(dataSpec)) {
+                    cachedDataSource
+                } else {
+                    directDataSource
+                }
+                selectedDataSource = delegate
+                return delegate.open(dataSpec)
+            }
+
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                val delegate = selectedDataSource
+                    ?: throw IllegalStateException("RoutingPlaybackDataSource not opened")
+                return delegate.read(buffer, offset, length)
+            }
+
+            override fun getUri(): android.net.Uri? = selectedDataSource?.uri
+
+            override fun getResponseHeaders(): Map<String, List<String>> =
+                selectedDataSource?.responseHeaders ?: emptyMap()
+
+            override fun close() {
+                val delegate = selectedDataSource
+                selectedDataSource = null
+                delegate?.close()
+            }
+        }
+
+        private class RoutingPlaybackDataSourceFactory(
+            private val directFactory: DataSource.Factory,
+            private val cachedFactory: DataSource.Factory
+        ) : DataSource.Factory {
+            override fun createDataSource(): DataSource {
+                return RoutingPlaybackDataSource(
+                    directDataSource = directFactory.createDataSource(),
+                    cachedDataSource = cachedFactory.createDataSource()
+                )
+            }
         }
 
         private fun invalidStreamUrl(cacheKey: String): String = "invalid://$cacheKey"
@@ -1558,6 +1671,13 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         @Synchronized
         private fun clearCachedResolvedStreamUrl(cacheKey: String) {
             resolvedStreamUrlCache.remove(cacheKey)
+        }
+
+        @Synchronized
+        private fun clearCachedMediaResource(cacheKey: String) {
+            if (cacheKey.isBlank()) return
+            runCatching { simpleCache?.removeResource(cacheKey) }
+                .onFailure { Timber.w(it, "Failed to clear cached media resource for $cacheKey") }
         }
 
         suspend fun resolvePlaybackStreamUrl(
@@ -1680,8 +1800,13 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                     .setUpstreamDataSourceFactory(upstreamFactory)
                     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
+                val routingDataSourceFactory = RoutingPlaybackDataSourceFactory(
+                    directFactory = upstreamFactory,
+                    cachedFactory = cacheDataSourceFactory
+                )
+
                 val resolvingDataSourceFactory = ResolvingDataSource.Factory(
-                    cacheDataSourceFactory,
+                    routingDataSourceFactory,
                     object : ResolvingDataSource.Resolver {
                         override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
                             val uri = dataSpec.uri
