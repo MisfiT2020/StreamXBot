@@ -80,6 +80,7 @@ export interface PlaylistTracksResponse {
 export interface TrackAudioInfo {
   album?: string
   artist?: string
+  performer?: string
   year?: number
   duration_sec?: number
   type?: string
@@ -99,6 +100,21 @@ export interface TrackDetailsResponse {
   _id: string
   audio?: TrackAudioInfo
   spotify?: TrackSpotifyInfo
+  title?: string
+  artist?: string
+  album?: string | null
+  duration_sec?: number
+  cover_url?: string | null
+  type?: string
+}
+
+export interface SharedAlbumResponse {
+  album?: {
+    id?: string
+    title?: string
+    cover_url?: string | null
+  }
+  tracks?: PlaylistTrack[]
 }
 
 export interface TrackLyricsResponse {

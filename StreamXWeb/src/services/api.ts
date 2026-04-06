@@ -1,4 +1,4 @@
-import type { BrowseResponse, PlaylistTracksResponse, PlaylistsResponse, TrackDetailsResponse, TrackLyricsResponse, AvailablePlaylistsResponse, AvailablePlaylistTracksResponse } from '../types/index.js'
+import type { BrowseResponse, PlaylistTracksResponse, PlaylistsResponse, TrackDetailsResponse, TrackLyricsResponse, AvailablePlaylistsResponse, AvailablePlaylistTracksResponse, SharedAlbumResponse } from '../types/index.js'
 import { platform } from '../platform.js'
 
 const normalizeBaseUrl = (raw: unknown): string | null => {
@@ -22,6 +22,8 @@ const AUTO_HIDE_PLAYER_STORAGE_KEY = 'streamw:ui:autoHidePlayer'
 const THEME_STORAGE_KEY = 'streamw:ui:theme'
 const FLOATING_NAV_TOP_PAD_STORAGE_KEY = 'streamw:ui:floatingNavTopPad'
 export const CACHE_TTL_MS = 3 * 60 * 60 * 1000
+
+const getApiBaseUrl = (apiBaseUrl?: string | null): string => normalizeBaseUrl(apiBaseUrl) || API_BASE_URL
 
 export type AuthUserInfo = {
   first_name?: string
@@ -762,6 +764,52 @@ export const api = {
       }
       throw new Error(
         `Failed to fetch track: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+      )
+    }
+
+    return response.json()
+  },
+
+  async getSharedTrack(trackId: string, apiBaseUrl?: string | null): Promise<TrackDetailsResponse> {
+    const response = await fetch(`${getApiBaseUrl(apiBaseUrl)}/share/tracks/${encodeURIComponent(trackId)}`, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+      },
+    })
+
+    if (!response.ok) {
+      let body = ''
+      try {
+        body = await response.text()
+      } catch {
+        body = ''
+      }
+      throw new Error(
+        `Failed to fetch shared track: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+      )
+    }
+
+    return response.json()
+  },
+
+  async getSharedAlbum(albumId: string, apiBaseUrl?: string | null): Promise<SharedAlbumResponse> {
+    const response = await fetch(`${getApiBaseUrl(apiBaseUrl)}/share/albums/${encodeURIComponent(albumId)}`, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+      },
+    })
+
+    if (!response.ok) {
+      let body = ''
+      try {
+        body = await response.text()
+      } catch {
+        body = ''
+      }
+      throw new Error(
+        `Failed to fetch shared album: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
       )
     }
 
