@@ -104,6 +104,7 @@ fun YouTubeHomeScreen(
     val showAccountPlaylists = remember { mutableStateOf(DataCache.isShowYouTubeAccountPlaylistsEnabled(context)) }
     val showSongSections = remember { mutableStateOf(DataCache.isShowYouTubeSongSectionsEnabled(context)) }
     val showBrowseSections = remember { mutableStateOf(DataCache.isShowYouTubeBrowseSectionsEnabled(context)) }
+    var refreshTrigger by remember { mutableIntStateOf(0) }
     val jamSongs = remember(homePage) {
         homePage?.sections
             .orEmpty()
@@ -138,6 +139,11 @@ fun YouTubeHomeScreen(
                     com.metrolist.innertube.YouTube.dataSyncId = null
                     accountInfo = null
                     accountPlaylists = null
+                    YouTubeHomeMemoryCache.homePage = null
+                    YouTubeHomeMemoryCache.accountInfo = null
+                    YouTubeHomeMemoryCache.accountPlaylists = null
+                    YouTubeHomeMemoryCache.lastLoadedAtMs = 0L
+                    refreshTrigger++
                     selectedChip.value = selectedChip.value 
                 }) { Text("Log out", color = Color(0xFFE24A5A)) }
             },
@@ -153,13 +159,17 @@ fun YouTubeHomeScreen(
             onDismiss = { showLoginDialog = false },
             onLoginSuccess = { name ->
                 showLoginDialog = false
+                YouTubeHomeMemoryCache.homePage = null
+                YouTubeHomeMemoryCache.accountInfo = null
+                YouTubeHomeMemoryCache.accountPlaylists = null
+                YouTubeHomeMemoryCache.lastLoadedAtMs = 0L
+                refreshTrigger++
                 selectedChip.value = selectedChip.value 
             }
         )
     }
 
-    LaunchedEffect(selectedChip.value) {
-        val chipValue = selectedChip.value
+    LaunchedEffect(selectedChip.value, refreshTrigger) {        val chipValue = selectedChip.value
         val cacheFresh = (System.currentTimeMillis() - YouTubeHomeMemoryCache.lastLoadedAtMs) < 5 * 60 * 1000
         if (chipValue == null && cacheFresh && YouTubeHomeMemoryCache.homePage != null) {
             homePage = YouTubeHomeMemoryCache.homePage
