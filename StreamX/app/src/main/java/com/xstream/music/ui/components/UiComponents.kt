@@ -676,9 +676,7 @@ fun SongContextMenu(
             }
 
             val searchSource = remember {
-                context.getSharedPreferences("search_prefs", Context.MODE_PRIVATE)
-                    .getString("search_source", "streamx")
-                    ?: "streamx"
+                DataCache.getProvider(context)
             }
             val isYouTubeSong = song?.id?.startsWith("yt_") == true
             val shouldShowYouTubeSync = isYouTubeSong && searchSource == "youtube"
@@ -2197,13 +2195,13 @@ fun SearchBar(initialQuery: String = "", onSearch: (String) -> Unit = {}) {
                 
                 Button(
                     onClick = {
+                        DataCache.setProvider(context, searchSource)
                         context.getSharedPreferences("search_prefs", Context.MODE_PRIVATE).edit()
                             .putString("search_source", searchSource)
                             .putString("search_channel_id", channelId)
                             .apply()
-                        showSettingsDialog = false 
-                    },
-                    modifier = Modifier
+                        showSettingsDialog = false
+                    },                    modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp),
                     colors = ButtonDefaults.buttonColors(),

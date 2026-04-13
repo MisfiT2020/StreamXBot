@@ -599,19 +599,21 @@ suspend fun getSoundcloudStreamUrl(apiUrl: String, trackId: String): String? = w
 fun searchSongs(apiUrl: String, query: String, page: Int = 1, limit: Int = 20, channelId: String = ""): SearchResponse {
     
     val normalizedUrl = normalizeApiInput(apiUrl)
+    if (normalizedUrl.isBlank()) return SearchResponse(page, limit, 0, emptyList(), null)
+
     val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
-    val encodedChannelId = channelId.trim().takeIf { it.isNotEmpty() }?.let { URLEncoder.encode(it, "UTF-8") }
+    val encodedChannelId = channelId.trim().takeIf { it.isNotEmpty() }?.let { java.net.URLEncoder.encode(it, "UTF-8") }
     val channelParam = encodedChannelId?.let { "&channel_id=$it" } ?: ""
     val url = "$normalizedUrl/search?query=$encodedQuery&page=$page&limit=$limit$channelParam"
     
-    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-        requestMethod = "GET"
-        setRequestProperty("accept", "application/json")
-        connectTimeout = 10_000
-        readTimeout = 10_000
-    }
-
     try {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("accept", "application/json")
+            connectTimeout = 10_000
+            readTimeout = 10_000
+        }
+
         val responseCode = connection.responseCode
         if (responseCode !in 200..299) {
             return SearchResponse(page, limit, 0, emptyList(), null)
@@ -652,12 +654,10 @@ fun searchSongs(apiUrl: String, query: String, page: Int = 1, limit: Int = 20, c
             total = root.optInt("total", 0),
             items = items,
             cover_url = root.optString("cover_url").takeIf { it != "null" && it.isNotBlank() }
-        )
+        ).also { connection.disconnect() }
     } catch (e: Exception) {
         Timber.tag("SearchApi").e(e, "Error searching songs")
         return SearchResponse(page, limit, 0, emptyList(), null)
-    } finally {
-        connection.disconnect()
     }
 }
 
@@ -979,37 +979,41 @@ suspend fun fetchTrackLyrics(
     }
 
     val normalized = normalizeApiInput(apiBaseUrl)
-    if (normalized.isBlank() || trackId.isBlank()) return null
+    if (trackId.isBlank()) return null
 
-    val lyricsUrl = "$normalized/tracks/$trackId/lyrics"
+    var fetchedLyrics: String? = null
+    
+    if (normalized.isNotBlank()) {
+        val lyricsUrl = "$normalized/tracks/$trackId/lyrics"
 
-    var fetchedLyrics = withContext(Dispatchers.IO) {
-        val connection = (URL(lyricsUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            setRequestProperty("accept", "application/json")
-            
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
-            effectiveToken?.let {
-                setRequestProperty("Authorization", "Bearer $it")
-                setRequestProperty("X-Auth-Token", it)
+        fetchedLyrics = withContext(Dispatchers.IO) {
+            val connection = (URL(lyricsUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("accept", "application/json")
+                
+                val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+                effectiveToken?.let {
+                    setRequestProperty("Authorization", "Bearer $it")
+                    setRequestProperty("X-Auth-Token", it)
+                }
+                
+                connectTimeout = 30_000
+                readTimeout = 30_000
             }
-            
-            connectTimeout = 30_000
-            readTimeout = 30_000
-        }
 
-        try {
-            val stream = if (connection.responseCode in 200..299) {
-                connection.inputStream
-            } else {
-                return@withContext null
+            try {
+                val stream = if (connection.responseCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    return@withContext null
+                }
+                
+                stream.bufferedReader().use { it.readText() }.trim()
+            } catch (e: Exception) {
+                null
+            } finally {
+                connection.disconnect()
             }
-            
-            stream.bufferedReader().use { it.readText() }.trim()
-        } catch (e: Exception) {
-            null
-        } finally {
-            connection.disconnect()
         }
     }
 

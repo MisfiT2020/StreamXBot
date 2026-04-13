@@ -233,7 +233,7 @@ fun MusicScreen(
     val currentHomeProvider by DataCache.homeProvider.collectAsState()
     val currentScreen = rememberSaveable {
         mutableStateOf(
-            if (!hasSeenLaunchPicker) "launch_picker" else if (apiUrlState.value.isBlank()) "api" else "home"
+            if (!hasSeenLaunchPicker) "launch_picker" else if (apiUrlState.value.isBlank() && DataCache.getProvider(context) != "youtube") "api" else "home"
         )
     }
     val navigationBackStack = remember { mutableStateListOf<String>() }

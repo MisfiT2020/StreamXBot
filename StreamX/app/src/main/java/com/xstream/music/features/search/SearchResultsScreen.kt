@@ -80,8 +80,8 @@ fun SearchResultsScreen(
             artists = emptyList()
             
             withContext(Dispatchers.IO) {
+                val source = DataCache.getProvider(context)
                 val prefs = context.getSharedPreferences("search_prefs", Context.MODE_PRIVATE)
-                val source = prefs.getString("search_source", "streamx") ?: "streamx"
                 val channelId = prefs.getString("search_channel_id", "") ?: ""
                 
                 if (source == "youtube") {
@@ -138,8 +138,8 @@ fun SearchResultsScreen(
                 val nextPage = page + 1
                 
                 withContext(Dispatchers.IO) {
+                    val source = DataCache.getProvider(context)
                     val prefs = context.getSharedPreferences("search_prefs", Context.MODE_PRIVATE)
-                    val source = prefs.getString("search_source", "streamx") ?: "streamx"
                     val channelId = prefs.getString("search_channel_id", "") ?: ""
                     
                     if (source == "youtube") {
@@ -340,18 +340,18 @@ fun SearchResultsScreen(
 
 private fun SearchItem.toSongModel(): Song {
     val mappedArtists = artists
-        .filter { it.name.isNotBlank() }
-        .ifEmpty {
-            artist.split(",")
-                .mapNotNull { raw ->
+        ?.filter { it.name.isNotBlank() }
+        ?.ifEmpty {
+            artist?.split(",")
+                ?.mapNotNull { raw ->
                     raw.trim().takeIf { it.isNotBlank() }?.let { SongArtist(name = it) }
-                }
-        }
+                } ?: emptyList()
+        } ?: emptyList()
 
     return Song(
         id = _id,
-        title = title,
-        artist = artist,
+        title = title ?: "",
+        artist = artist ?: "Unknown Artist",
         artists = mappedArtists,
         album = album,
         albumId = album_id,

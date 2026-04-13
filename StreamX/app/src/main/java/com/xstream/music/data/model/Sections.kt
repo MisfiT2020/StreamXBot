@@ -611,8 +611,7 @@ fun SongRowCard(
                 } else null,
                 onSyncClick = if (
                     song.id?.startsWith("yt_") == true &&
-                    context.getSharedPreferences("search_prefs", Context.MODE_PRIVATE)
-                        .getString("search_source", "streamx") == "youtube"
+                    DataCache.getProvider(context) == "youtube"
                 ) {
                     {
                         coroutineScope.launch {
