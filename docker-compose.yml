@@ -4,6 +4,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-
     command: ["bash", "/app/start.sh"]
     restart: on-failure
+    depends_on:
+      - mongodb 
+    networks:
+      - streamx-network
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb-streamx
+    # ports:
+    #   - "27017:27017"  Uncomment if you want to access MongoDB from outside the Docker network (e.g., for development)
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      # IMPORTANT: Change these credentials BEFORE going to production!
+      # Make sure to update MONGO_URI in your config.py to match:
+      # MONGO_URI = "mongodb://admin:password@mongodb:27017/Stream"
+      # If you change these values below, update config.py with new credentials
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    networks:
+      - streamx-network
+    restart: on-failure
+
+volumes:
+  mongodb_data:
+
+networks:
+  streamx-network:
+    driver: bridge
