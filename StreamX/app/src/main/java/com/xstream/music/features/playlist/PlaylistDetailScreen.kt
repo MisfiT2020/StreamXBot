@@ -1178,7 +1178,13 @@ fun PlaylistDetailScreen(
                             containerColor = Color(0xFF1C1C1E)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Share", color = Color.White) },
+                                text = { 
+                                    Text(
+                                        text = "Share", 
+                                        color = Color.White,
+                                        fontFamily = SFProDisplayFontFamily
+                                    ) 
+                                },
                                 onClick = { 
                                     onShareClick?.invoke(playlist)
                                     menuExpanded.value = false

@@ -738,8 +738,8 @@ fun FullPlayerScreen(
                 val lyricsY = 0.dp
                 
                 
-                val playerImageSize = 350.dp
-                val trackInfoHeight = 80.dp
+                val trackInfoHeight = 60.dp
+                val playerImageSize = maxWidth.coerceAtMost(maxHeight - trackInfoHeight - 16.dp)
                 
                 val playerX = (maxWidth - playerImageSize) / 2
                 
@@ -1318,7 +1318,7 @@ fun FullPlayerScreen(
                         }
                         
                         
-                        Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
             }
@@ -1342,7 +1342,7 @@ fun FullPlayerScreen(
                         onQualityClick = { showQualityDialog = true }
                     )
                     
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     
                     
                     Row(
@@ -1426,7 +1426,7 @@ fun FullPlayerScreen(
                         }
                     }
                     
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     
                     
                     Row(
@@ -1506,7 +1506,7 @@ fun FullPlayerScreen(
                     }
                     
                     
-                    Spacer(modifier = Modifier.height(32.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
                     
                     
                     Row(
