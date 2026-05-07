@@ -1510,7 +1510,15 @@ fun MusicScreen(
                             },
                             onSongClick = { songs, index ->
                                 val token = AuthPreferences.getUser(context)?.token
-                                playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
+                                val song = songs.getOrNull(index)
+                                if (DataCache.getProvider(context) == "youtube" && song?.id?.startsWith("yt_") == true) {
+                                    scope.launch {
+                                        val (watchQueue, watchQueueIndex) = getYouTubeWatchQueue(song, context)
+                                        playerManager.setQueueFromLatest(watchQueue, watchQueueIndex, apiUrlState.value, token)
+                                    }
+                                } else {
+                                    playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
+                                }
                             },
                             isPlayerVisible = playerManager.currentSong.value != null,
                             onAlbumClick = { id: String ->

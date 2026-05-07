@@ -29,6 +29,7 @@ import com.metrolist.innertube.models.AlbumItem
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.innertube.models.EpisodeItem
 import com.metrolist.innertube.models.YouTubeClient
+import com.metrolist.innertube.models.WatchEndpoint
 import android.net.ConnectivityManager
 import com.xstream.music.core.utils.YTPlayerUtils
 import com.xstream.music.data.model.AlbumData
@@ -474,6 +475,36 @@ suspend fun searchYoutubeMusicContinuation(continuation: String, context: Contex
         }
         YtSearchResult(emptyList(), null)
     }
+}
+
+suspend fun getYouTubeWatchQueue(song: Song, context: Context): Pair<List<Song>, Int> = withContext(Dispatchers.IO) {
+    val videoId = song.id?.removePrefix("yt_")?.takeIf { it.isNotBlank() }
+        ?: return@withContext listOf(song) to 0
+    val selectedId = "yt_$videoId"
+
+    try {
+        initYouTubeAuth(context)
+        val result = YouTube.next(WatchEndpoint(videoId = videoId)).getOrNull()
+        val nextSongs = result?.items
+            ?.mapNotNull { it.toSong() }
+            .orEmpty()
+
+        if (nextSongs.isNotEmpty()) {
+            val resultIndex = result?.currentIndex?.takeIf { it in nextSongs.indices }
+            val matchedIndex = nextSongs.indexOfFirst { it.id == selectedId }.takeIf { it >= 0 }
+            val selectedIndex = resultIndex ?: matchedIndex
+
+            if (selectedIndex != null) {
+                return@withContext nextSongs to selectedIndex
+            }
+
+            return@withContext (listOf(song) + nextSongs.filterNot { it.id == selectedId }) to 0
+        }
+    } catch (e: Exception) {
+        Timber.tag("YouTubeApi").e(e, "Error fetching YouTube watch queue for videoId=$videoId")
+    }
+
+    listOf(song) to 0
 }
 
 
