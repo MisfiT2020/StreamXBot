@@ -6,4 +6,8 @@ services:
       dockerfile: Dockerfile
 
     command: ["bash", "/app/start.sh"]
+
+    ports:
+      - "8000:8000"  
+      
     restart: on-failure
