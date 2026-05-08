@@ -29,9 +29,12 @@ os.makedirs(COOKIES_DIR, exist_ok=True)
 edit_states = {}
 user_states = {}
 
-BOTSETTINGS_IDS = [
-   "AgACAgUAAxkBAAP2aWxqNan3oFTA5RKNufU71wABx3stAAKMDWsb6rxpV2aqK8ToBALEAAgBAAMCAAN5AAceBA",
-]
+BOTSETTINGS_IDS = ["Assets/cover.jpg"]
+
+def update_bot_settings_ids(msg):
+    global BOTSETTINGS_IDS
+    if msg and msg.photo and "Assets/cover.jpg" in BOTSETTINGS_IDS:
+        BOTSETTINGS_IDS = [msg.photo.file_id if x == "Assets/cover.jpg" else x for x in BOTSETTINGS_IDS]
 
 async def get_settings_keyboard(page=0, items_per_page=12, edit_mode=False):
     
@@ -94,11 +97,12 @@ async def admin_handler(client, message: Message):
             InlineKeyboardButton("Database", callback_data="database")
         ]
     ])
-    await message.reply_photo(
+    sent = await message.reply_photo(
         photo=random.choice(BOTSETTINGS_IDS),
         caption="Admin Panel:",
         reply_markup=keyboard
     )
+    update_bot_settings_ids(sent)
 
 
 @Client.on_callback_query(filters.regex("^config$") & dev_cmd)
@@ -146,15 +150,14 @@ async def settings_menu(client: Client, message: Message):
         reply_markup=keyboard
     )
 
+async def edit_message(query: CallbackQuery, text: str, reply_markup=None):
+    if query.message.photo:
+        return await query.message.edit_caption(caption=text, reply_markup=reply_markup)
+    return await query.message.edit_text(text=text, reply_markup=reply_markup)
+
 async def handle_config(callback_query: CallbackQuery):
     keyboard = await get_settings_keyboard()
-    await callback_query.message.edit_media(
-        media=InputMediaPhoto(
-            random.choice(BOTSETTINGS_IDS),
-            caption="Config Variables | Page: 0 | State: view"
-        ),
-        reply_markup=keyboard
-    )
+    await edit_message(callback_query, "Config Variables | Page: 0 | State: view", keyboard)
 
 @Client.on_message(filters.document & filters.user(Config.OWNER_ID))
 async def handle_cookie_upload(client, message: Message):
@@ -197,14 +200,10 @@ async def handle_cookie_upload(client, message: Message):
         await message.reply(f"Error: {e}")
 
 async def handle_cookies(callback_query: CallbackQuery):
-    await callback_query.message.edit_media(
-        media=InputMediaPhoto(
-            random.choice(BOTSETTINGS_IDS),
-            caption="Send .txt file for cookies storage\nExample: yt.txt"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Back", callback_data="refresh")]
-        ])
+    await edit_message(
+        callback_query, 
+        "Send .txt file for cookies storage\nExample: yt.txt",
+        InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="refresh")]])
     )
     user_states[callback_query.from_user.id] = callback_query.message.id
 
@@ -269,40 +268,51 @@ async def handle_database(callback_query: CallbackQuery):
     except Exception as e:
         stats_string = f"**Database Statistics**\n\nError: {str(e)}"
     
-    await callback_query.message.edit_media(
-        media=InputMediaPhoto(
-            random.choice(BOTSETTINGS_IDS),
-            caption=stats_string
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Back", callback_data="refresh")]
-        ])
+    await edit_message(
+        callback_query,
+        stats_string,
+        InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="refresh")]])
     )
 
 async def refresh_panel(callback_query: CallbackQuery):
-    
     if callback_query.from_user.id in edit_states:
         del edit_states[callback_query.from_user.id]
     if callback_query.from_user.id in user_states:
         del user_states[callback_query.from_user.id]
 
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Config", callback_data="config"),
+            InlineKeyboardButton("Cookies", callback_data="cookies")
+        ],
+        [
+            InlineKeyboardButton("Stats", callback_data="stats"),
+            InlineKeyboardButton("Database", callback_data="database")
+        ]
+    ])
+
+    current_photo = callback_query.message.photo
+    is_cover = False
+    if current_photo:
+        for cid in BOTSETTINGS_IDS:
+            if current_photo.file_id == cid:
+                is_cover = True
+                break
     
-    await callback_query.message.edit_media(
-        media=InputMediaPhoto(
-            random.choice(BOTSETTINGS_IDS),
-            caption="Admin Panel"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Config", callback_data="config"),
-                InlineKeyboardButton("Cookies", callback_data="cookies")
-            ],
-            [
-                InlineKeyboardButton("Stats", callback_data="stats"),
-                InlineKeyboardButton("Database", callback_data="database")
-            ]
-        ])
-    )
+    if is_cover:
+        await callback_query.message.edit_caption(
+            caption="Admin Panel",
+            reply_markup=keyboard
+        )
+    else:
+        sent = await callback_query.message.edit_media(
+            media=InputMediaPhoto(
+                random.choice(BOTSETTINGS_IDS),
+                caption="Admin Panel"
+            ),
+            reply_markup=keyboard
+        )
+        update_bot_settings_ids(sent)
 
 def get_disk_usage():
     usage = shutil.disk_usage('.')
@@ -332,29 +342,44 @@ def get_network_usage():
 
 @Client.on_callback_query(filters.regex(r"^back_main_") & dev_cmd)
 async def back_main(client: Client, query: CallbackQuery):
-    
     if query.from_user.id in edit_states:
         del edit_states[query.from_user.id]
     if query.from_user.id in user_states:
         del user_states[query.from_user.id]
 
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Config", callback_data="config"),
+            InlineKeyboardButton("Cookies", callback_data="cookies")
+        ],
+        [
+            InlineKeyboardButton("Stats", callback_data="stats"),
+            InlineKeyboardButton("Database", callback_data="database")
+        ]
+    ])
+
+    current_photo = query.message.photo
+    is_cover = False
+    if current_photo:
+        for cid in BOTSETTINGS_IDS:
+            if current_photo.file_id == cid:
+                is_cover = True
+                break
     
-    await query.message.edit_media(
-        media=InputMediaPhoto(
-            random.choice(BOTSETTINGS_IDS),
-            caption="Admin Panel:"
-        ),
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Config", callback_data="config"),
-                InlineKeyboardButton("Cookies", callback_data="cookies")
-            ],
-            [
-                InlineKeyboardButton("Stats", callback_data="stats"),
-                InlineKeyboardButton("Database", callback_data="database")
-            ]
-        ])
-    )
+    if is_cover:
+        await query.message.edit_caption(
+            caption="Admin Panel:",
+            reply_markup=keyboard
+        )
+    else:
+        sent = await query.message.edit_media(
+            media=InputMediaPhoto(
+                random.choice(BOTSETTINGS_IDS),
+                caption="Admin Panel:"
+            ),
+            reply_markup=keyboard
+        )
+        update_bot_settings_ids(sent)
 
 @Client.on_callback_query(filters.regex(r"^setting_") & dev_cmd)
 async def handle_setting(client: Client, query: CallbackQuery):
@@ -372,9 +397,10 @@ async def toggle_edit_mode(client: Client, query: CallbackQuery):
                 break
     
     keyboard = await get_settings_keyboard(page=current_page, edit_mode=True)
-    await query.message.edit_text(
+    await edit_message(
+        query,
         f"Config Variables | Page: {current_page} | State: edit",
-        reply_markup=keyboard
+        keyboard
     )
 
 @Client.on_callback_query(filters.regex(r"^view_mode$") & dev_cmd)
@@ -387,9 +413,10 @@ async def toggle_view_mode(client: Client, query: CallbackQuery):
                 break
     
     keyboard = await get_settings_keyboard(page=current_page, edit_mode=False)
-    await query.message.edit_text(
+    await edit_message(
+        query,
         f"Config Variables | Page: {current_page} | State: view",
-        reply_markup=keyboard
+        keyboard
     )
 
 @Client.on_callback_query(filters.regex(r"^page_") & dev_cmd)
@@ -400,9 +427,10 @@ async def change_page(client: Client, query: CallbackQuery):
     keyboard = await get_settings_keyboard(page, edit_mode=edit_mode)
     state = "edit" if edit_mode else "view"
     try:
-        await query.message.edit_text(
+        await edit_message(
+            query,
             f"Config Variables | Page: {page} | State: {state}",
-            reply_markup=keyboard
+            keyboard
         )
     except MessageNotModified:
         try:
@@ -432,13 +460,13 @@ async def edit_setting(client: Client, query: CallbackQuery):
                 current_page = int(button.callback_data.split("_")[1])
                 break
     
-    # Special handling for OWNER_ID and SUDO_USERS: provide Add/Remove buttons
     if key in ("OWNER_ID", "SUDO_USERS"):
         edit_states[user_id] = {
             "key": key,
             "message_id": query.message.id,
             "page": current_page,
-            "edit_mode": True
+            "edit_mode": True,
+            "is_photo": bool(query.message.photo)
         }
 
         keyboard = InlineKeyboardMarkup([
@@ -452,18 +480,19 @@ async def edit_setting(client: Client, query: CallbackQuery):
             ]
         ])
 
-        await query.message.edit_text(
+        await edit_message(
+            query,
             f"Manage {key}: Choose action.",
-            reply_markup=keyboard
+            keyboard
         )
         return
 
-    # Default edit flow for all other keys
     edit_states[user_id] = {
         "key": key,
         "message_id": query.message.id,
         "page": current_page,
-        "edit_mode": True
+        "edit_mode": True,
+        "is_photo": bool(query.message.photo)
     }
 
     keyboard = InlineKeyboardMarkup([
@@ -473,9 +502,10 @@ async def edit_setting(client: Client, query: CallbackQuery):
         ]
     ])
 
-    await query.message.edit_text(
+    await edit_message(
+        query,
         f"Send new value for {key}:",
-        reply_markup=keyboard
+        keyboard
     )
 
 @Client.on_callback_query(filters.regex(r"^back_settings_") & dev_cmd)
@@ -493,16 +523,15 @@ async def back_settings(client: Client, query: CallbackQuery):
     state = "edit" if edit_mode else "view"
 
     
-    await query.message.edit_text(
+    await edit_message(
+        query,
         f"Config Variables | Page: {page} | State: {state}",
-        reply_markup=keyboard
+        keyboard
     )
 
 @Client.on_callback_query(filters.regex(r"^manage_(add|remove)_(OWNER_ID|SUDO_USERS)$") & dev_cmd)
 async def manage_owner_sudo_action(client: Client, query: CallbackQuery):
-    # Split with maxsplit=2 to preserve keys containing underscores (e.g., SUDO_USERS)
     parts = query.data.split("_", 2)
-    # expected: ["manage", "add"|"remove", "OWNER_ID"|"SUDO_USERS"]
     try:
         action = parts[1]
         key = parts[2]
@@ -513,7 +542,6 @@ async def manage_owner_sudo_action(client: Client, query: CallbackQuery):
             pass
         return
 
-    # Normalize potential aliases just in case
     if key == "SUDO":
         key = "SUDO_USERS"
     if key == "OWNER":
@@ -521,11 +549,9 @@ async def manage_owner_sudo_action(client: Client, query: CallbackQuery):
 
     user_id = query.from_user.id
     state = edit_states.get(user_id) or {}
-    # Keep existing state, only set action
     state.update({"action": action, "key": key, "message_id": query.message.id})
     edit_states[user_id] = state
 
-    # Prompt for an ID to add/remove
     try:
         await query.answer(f"Send the user ID to {action}.")
     except Exception:
@@ -538,10 +564,16 @@ async def manage_owner_sudo_action(client: Client, query: CallbackQuery):
             InlineKeyboardButton("Close", callback_data="close_settings")
         ]
     ])
-    await query.message.edit_text(
+    await edit_message(
+        query,
         f"Send the Telegram user ID to {action} {key}:",
-        reply_markup=keyboard
+        keyboard
     )
+
+async def edit_panel_message(client: Client, chat_id: int, state: dict, text: str, reply_markup=None):
+    if state.get("is_photo"):
+        return await client.edit_message_caption(chat_id, state["message_id"], caption=text, reply_markup=reply_markup)
+    return await client.edit_message_text(chat_id, state["message_id"], text=text, reply_markup=reply_markup)
 
 @Client.on_message(filters.user(Config.OWNER_ID) & filters.text & ~filters.command(["sudo"]), group=7)
 async def receive_add_remove_value(client: Client, message: Message):
@@ -550,7 +582,6 @@ async def receive_add_remove_value(client: Client, message: Message):
         return
     state = edit_states[user_id]
     key = state.get("key")
-    # Normalize potential aliases
     if key == "SUDO":
         key = "SUDO_USERS"
     if key == "OWNER":
@@ -559,13 +590,11 @@ async def receive_add_remove_value(client: Client, message: Message):
     if key not in ("OWNER_ID", "SUDO_USERS") or action not in ("add", "remove"):
         return
 
-    # Delete the admin's input message to keep the panel clean
     try:
         await message.delete()
     except Exception:
         pass
 
-    # Parse one or more IDs from the text
     text = (message.text or "").strip()
     tokens = [t for t in re.split(r"[\s,]+", text) if t]
     ids = []
@@ -582,13 +611,13 @@ async def receive_add_remove_value(client: Client, message: Message):
                 InlineKeyboardButton("Close", callback_data="close_settings")
             ]
         ])
-        await client.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=state.get("message_id"),
-            text=f"Invalid ID. Please try again.",
-            reply_markup=keyboard
+        await edit_panel_message(
+            client,
+            message.chat.id,
+            state,
+            f"Invalid ID. Please try again.",
+            keyboard
         )
-        # keep state so they can retry
         return
 
     current = list(Config.get(key) or [])
@@ -607,23 +636,24 @@ async def receive_add_remove_value(client: Client, message: Message):
                 InlineKeyboardButton("Close", callback_data="close_settings")
             ]
         ])
-        await client.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=state.get("message_id"),
-            text=f"❌ Error: {str(e)}",
-            reply_markup=keyboard
+        await edit_panel_message(
+            client,
+            message.chat.id,
+            state,
+            f"❌ Error: {str(e)}",
+            keyboard
         )
         del edit_states[user_id]
         return
 
-    # Success: return to the edit panel without showing values
     page = state.get("page", 0)
     keyboard = await get_settings_keyboard(page=page, edit_mode=True)
-    await client.edit_message_text(
-        chat_id=message.chat.id,
-        message_id=state.get("message_id"),
-        text=f"Config Variables | Page: {page} | State: edit",
-        reply_markup=keyboard
+    await edit_panel_message(
+        client,
+        message.chat.id,
+        state,
+        f"Config Variables | Page: {page} | State: edit",
+        keyboard
     )
 
     del edit_states[user_id]
@@ -635,7 +665,6 @@ async def receive_new_value(client: Client, message: Message):
     
     state = edit_states[user_id]
     key = state["key"]
-    # For OWNER_ID and SUDO_USERS, use dedicated add/remove flow and ignore generic updates
     if key in ("OWNER_ID", "SUDO_USERS"):
         try:
             await message.delete()
@@ -663,11 +692,12 @@ async def receive_new_value(client: Client, message: Message):
             feedback += f"\n\nNote: Value type changed from {type(current_value).__name__} to {type(new_processed_value).__name__}"
         
         keyboard = await get_settings_keyboard(page=page, edit_mode=edit_mode)
-        await client.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=state["message_id"],
-            text=f"Config Variables | Page: {page} | State: {'edit' if edit_mode else 'view'}\n\n{feedback}",
-            reply_markup=keyboard
+        await edit_panel_message(
+            client,
+            message.chat.id,
+            state,
+            f"Config Variables | Page: {page} | State: {'edit' if edit_mode else 'view'}\n\n{feedback}",
+            keyboard
         )
     except ValueError as ve:
         
@@ -677,11 +707,12 @@ async def receive_new_value(client: Client, message: Message):
                 InlineKeyboardButton("Close", callback_data="close_settings")
             ]
         ])
-        await client.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=state["message_id"],
-            text=f"⚠️ {str(ve)}",
-            reply_markup=keyboard
+        await edit_panel_message(
+            client,
+            message.chat.id,
+            state,
+            f"⚠️ {str(ve)}",
+            keyboard
         )
     except Exception as error:
         keyboard = InlineKeyboardMarkup([
@@ -690,11 +721,12 @@ async def receive_new_value(client: Client, message: Message):
                 InlineKeyboardButton("Close", callback_data="close_settings")
             ]
         ])
-        await client.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=state["message_id"],
-            text=f"❌ Error updating setting: {str(error)}",
-            reply_markup=keyboard
+        await edit_panel_message(
+            client,
+            message.chat.id,
+            state,
+            f"❌ Error updating setting: {str(error)}",
+            keyboard
         )
     finally:
         del edit_states[user_id]
