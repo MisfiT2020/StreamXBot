@@ -4,7 +4,7 @@ import { SongList } from '../components/SongList.js'
 import { PlaylistList, UpdatedPlaylists } from '../components/PlaylistList.js'
 import { JamSession } from '../components/JamSession.js'
 import { usePlayerLibrary } from '../context/PlayerContext.js'
-import { api, CACHE_TTL_MS, getAuthUserInfo, getCacheEnabled } from '../services/api.js'
+import { api, CACHE_TTL_MS, getAuthToken, getAuthUserInfo, getCacheEnabled } from '../services/api.js'
 import type { Playlist, Song, BrowseResponse } from '../types/index.js'
 import { platform } from '../platform.js'
 import './Home.css'
@@ -60,6 +60,12 @@ export const Home = () => {
   const [latestLoading, setLatestLoading] = useState(false)
   const [randomMix, setRandomMix] = useState<Song[]>([])
   const [randomMixLoading, setRandomMixLoading] = useState(false)
+  // Redirect to login when not authenticated
+  useEffect(() => {
+    if (!getAuthToken()) {
+      navigate('/login', { replace: true })
+    }
+  }, [navigate])
 
   useEffect(() => {
     const sync = () => setUserId(getAuthUserInfo()?.user_id ?? null)
@@ -253,8 +259,8 @@ export const Home = () => {
       <main className="content">
         {!platform.isTelegram && (
           <div className="home-search-container">
-            <button 
-              className="home-search-bar" 
+            <button
+              className="home-search-bar"
               type="button"
               onClick={() => navigate('/search')}
               aria-label="Search music"

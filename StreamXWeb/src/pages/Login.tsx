@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../services/api.js'
 import './Login.css'
 
+type LoginMode = 'owner' | 'account'
+
 export const LoginPage = () => {
   const navigate = useNavigate()
+  const [mode, setMode] = useState<LoginMode>('owner')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -13,20 +16,27 @@ export const LoginPage = () => {
   const handleSubmit = useCallback(
     async (e: FormEvent) => {
       e.preventDefault()
-      
-      if (!username.trim() || !password.trim()) {
-        setError('Please enter both username and password')
+      setError(null)
+
+      if (!password.trim()) {
+        setError('Please enter your password')
+        return
+      }
+
+      if (mode === 'account' && !username.trim()) {
+        setError('Please enter your username')
         return
       }
 
       setLoading(true)
-      setError(null)
 
       try {
-        await api.login(username.trim(), password)
-        // Redirect to home after successful login
+        if (mode === 'owner') {
+          await api.ownerLogin(password)
+        } else {
+          await api.login(username.trim(), password)
+        }
         navigate('/', { replace: true })
-        // Reload to refresh auth state
         window.location.reload()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Login failed')
@@ -34,12 +44,20 @@ export const LoginPage = () => {
         setLoading(false)
       }
     },
-    [username, password, navigate],
+    [mode, username, password, navigate],
   )
 
   const handleClose = useCallback(() => {
     navigate(-1)
   }, [navigate])
+
+  const toggleMode = useCallback(() => {
+    setMode((m) => (m === 'owner' ? 'account' : 'owner'))
+    setError(null)
+  }, [])
+
+  const isSubmitDisabled =
+    loading || !password.trim() || (mode === 'account' && !username.trim())
 
   return (
     <div className="login-page">
@@ -57,25 +75,29 @@ export const LoginPage = () => {
           </svg>
         </div>
 
-        <h1 className="login-title">Sign in with your Account</h1>
+        <h1 className="login-title">
+          {mode === 'owner' ? 'Enter API Password' : 'Sign in with your Account'}
+        </h1>
         <p className="login-subtitle">
-          You will be signed in to
-          <br />
-          Music Streaming.
+          {mode === 'owner'
+            ? 'Access your private music streaming server.'
+            : 'Sign in to your account on this server.'}
         </p>
 
         <form className="login-form" onSubmit={handleSubmit}>
-          <div className="login-input-group">
-            <input
-              type="text"
-              className="login-input"
-              placeholder="Username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              disabled={loading}
-              autoComplete="username"
-            />
-          </div>
+          {mode === 'account' && (
+            <div className="login-input-group">
+              <input
+                type="text"
+                className="login-input"
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={loading}
+                autoComplete="username"
+              />
+            </div>
+          )}
 
           <div className="login-input-group">
             <input
@@ -90,7 +112,7 @@ export const LoginPage = () => {
             <button
               type="submit"
               className="login-submit-btn"
-              disabled={loading || !username.trim() || !password.trim()}
+              disabled={isSubmitDisabled}
               aria-label="Sign in"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -103,11 +125,8 @@ export const LoginPage = () => {
         </form>
 
         <div className="login-links">
-          <button type="button" className="login-link" disabled>
-            Create New Account ›
-          </button>
-          <button type="button" className="login-link" disabled>
-            Forgot Password?
+          <button type="button" className="login-link" onClick={toggleMode}>
+            {mode === 'owner' ? 'Use Account Login ›' : 'Use Owner Password ›'}
           </button>
         </div>
       </div>

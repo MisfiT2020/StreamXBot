@@ -835,6 +835,134 @@ suspend fun loginUser(apiBaseUrl: String, request: LoginRequest): LoginResponse 
     }
 }
 
+suspend fun getSetupStatus(apiBaseUrl: String): SetupStatusResponse {
+    val normalizedBase = normalizeApiInput(apiBaseUrl)
+    if (normalizedBase.isBlank()) return SetupStatusResponse(ok = false, configured = false, needs_setup = true)
+
+    return withContext(Dispatchers.IO) {
+        try {
+            val url = "$normalizedBase/auth/setup/status"
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("accept", "application/json")
+                connectTimeout = 15_000
+                readTimeout = 15_000
+            }
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream.bufferedReader().use { it.readText() }
+            } catch (e: Exception) { "" }
+            connection.disconnect()
+
+            if (responseText.isNotBlank()) {
+                val root = JSONObject(responseText)
+                SetupStatusResponse(
+                    ok = root.optBoolean("ok", false),
+                    configured = root.optBoolean("configured", false),
+                    needs_setup = root.optBoolean("needs_setup", true),
+                    owner_id = root.optLong("owner_id").takeIf { it != 0L }
+                )
+            } else {
+                SetupStatusResponse(ok = false, configured = false, needs_setup = true)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "getSetupStatus failed")
+            SetupStatusResponse(ok = false, configured = false, needs_setup = true)
+        }
+    }
+}
+
+suspend fun setupOwnerPassword(apiBaseUrl: String, password: String): LoginResponse {
+    val normalizedBase = normalizeApiInput(apiBaseUrl)
+    if (normalizedBase.isBlank()) return LoginResponse(ok = false)
+
+    return withContext(Dispatchers.IO) {
+        try {
+            val url = "$normalizedBase/auth/setup"
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("accept", "application/json")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+                connectTimeout = 15_000
+                readTimeout = 15_000
+            }
+            val body = JSONObject().apply { put("password", password) }
+            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream.bufferedReader().use { it.readText() }
+            } catch (e: Exception) { "" }
+            connection.disconnect()
+
+            if (responseText.isNotBlank()) {
+                val root = JSONObject(responseText)
+                LoginResponse(
+                    ok = root.optBoolean("ok", false),
+                    user_id = root.optLong("user_id").takeIf { it != 0L },
+                    token = root.optString("token").takeIf { it.isNotBlank() },
+                    first_name = root.optString("first_name").takeIf { it.isNotBlank() },
+                    profile_url = root.optString("profile_url").takeIf { it.isNotBlank() },
+                    photo_url = root.optString("photo_url").takeIf { it.isNotBlank() }
+                )
+            } else {
+                LoginResponse(ok = false)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "setupOwnerPassword failed")
+            LoginResponse(ok = false)
+        }
+    }
+}
+
+suspend fun ownerLogin(apiBaseUrl: String, password: String): LoginResponse {
+    val normalizedBase = normalizeApiInput(apiBaseUrl)
+    if (normalizedBase.isBlank()) return LoginResponse(ok = false)
+
+    return withContext(Dispatchers.IO) {
+        try {
+            val url = "$normalizedBase/auth/password?set_cookie=false"
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("accept", "application/json")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+                connectTimeout = 15_000
+                readTimeout = 15_000
+            }
+            val body = JSONObject().apply { put("password", password) }
+            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream.bufferedReader().use { it.readText() }
+            } catch (e: Exception) { "" }
+            connection.disconnect()
+
+            if (responseText.isNotBlank()) {
+                val root = JSONObject(responseText)
+                LoginResponse(
+                    ok = root.optBoolean("ok", false),
+                    user_id = root.optLong("user_id").takeIf { it != 0L },
+                    token = root.optString("token").takeIf { it.isNotBlank() },
+                    first_name = root.optString("first_name").takeIf { it.isNotBlank() },
+                    profile_url = root.optString("profile_url").takeIf { it.isNotBlank() },
+                    photo_url = root.optString("photo_url").takeIf { it.isNotBlank() }
+                )
+            } else {
+                LoginResponse(ok = false)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "ownerLogin failed")
+            LoginResponse(ok = false)
+        }
+    }
+}
+
 suspend fun fetchBrowseSongs(apiInput: String, page: Int = 1, context: Context? = null, token: String? = null): List<Song> {
     val normalized = normalizeApiInput(apiInput)
     if (normalized.isBlank()) return emptyList()

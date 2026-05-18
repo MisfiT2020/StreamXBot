@@ -10,15 +10,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from Api.routers.webapp import extract_telegram_user
 from Api.schemas.auth import (
+    ChangeOwnerPasswordRequest,
+    OwnerPasswordLoginRequest,
     PasswordLoginRequest,
     SetCookieRequest,
     SetCredentialsRequest,
+    SetOwnerPasswordRequest,
     TgLoginRequest,
     FCMTokenRequest,
     RegisterRequest,
     ValidateOTPRequest,
 )
-from Api.utils.auth import create_auth_token, require_user_id, verify_auth_token
+from Api.utils.auth import (
+    create_auth_token,
+    require_admin_user_id,
+    require_user_id,
+    verify_auth_token,
+)
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 
@@ -222,6 +230,174 @@ async def password_login(
     if set_cookie:
         _set_auth_cookie(response=response, token=token)
     return {"ok": True, "user_id": uid, "token": token, "first_name": first_name, "profile_url": profile_url, "photo_url": profile_url}
+
+
+def _get_primary_owner_id() -> int:
+    owners = getattr(Config, "OWNER_ID", None) or []
+    for v in owners:
+        try:
+            uid = int(v)
+            if uid > 0:
+                return uid
+        except Exception:
+            continue
+    return 0
+
+
+async def _owner_password_exists() -> bool:
+    col = db_handler.get_collection("auth_config").collection
+    doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
+    stored = doc.get("password") if isinstance(doc, dict) else None
+    return isinstance(stored, dict) and bool(stored)
+
+
+@router.get("/setup/status")
+async def setup_status():
+    exists = await _owner_password_exists()
+    owner_uid = _get_primary_owner_id()
+    return {"ok": True, "configured": exists, "needs_setup": not exists, "owner_id": owner_uid if owner_uid > 0 else None}
+
+
+@router.post("/setup")
+async def setup_owner_password(
+    payload: SetOwnerPasswordRequest,
+    response: Response,
+):
+    """One-time first-run setup. Creates the hashed owner password and auto-logs in."""
+    if await _owner_password_exists():
+        raise HTTPException(status_code=403, detail="setup already completed")
+
+    pwd = (payload.password or "").strip()
+    if len(pwd) < 6:
+        raise HTTPException(status_code=400, detail="password must be at least 6 characters")
+
+    owner_uid = _get_primary_owner_id()
+    if owner_uid <= 0:
+        raise HTTPException(status_code=500, detail="owner is not configured")
+
+    now = time.time()
+    col = db_handler.get_collection("auth_config").collection
+    await col.update_one(
+        {"_id": "owner_password"},
+        {
+            "$set": {
+                "password": _hash_password(pwd),
+                "updated_at": now,
+                "created_at": now,
+            }
+        },
+        upsert=True,
+    )
+
+    users_col = db_handler.get_collection("users").collection
+    user = await users_col.find_one({"_id": owner_uid}, {"first_name": 1, "profile_url": 1, "photo_url": 1}) or {}
+    tg = await _get_telegram_profile(owner_uid)
+    updates: dict = {"updated_at": now}
+    if isinstance(user, dict) and not user:
+        updates["created_at"] = now
+    if tg.get("first_name"):
+        updates["first_name"] = tg["first_name"]
+    if tg.get("photo_url"):
+        updates["photo_url"] = tg["photo_url"]
+        updates["profile_url"] = tg["photo_url"]
+    if updates:
+        await users_col.update_one(
+            {"_id": owner_uid},
+            {"$set": updates, "$setOnInsert": {"_id": owner_uid}},
+            upsert=True,
+        )
+        user = {**user, **updates}
+
+    first_name = user.get("first_name") if isinstance(user.get("first_name"), str) else None
+    profile_url = user.get("profile_url") if isinstance(user.get("profile_url"), str) else None
+    if not profile_url:
+        profile_url = user.get("photo_url") if isinstance(user.get("photo_url"), str) else None
+
+    token = create_auth_token(user_id=owner_uid, first_name=first_name, profile_url=profile_url)
+    _set_auth_cookie(response=response, token=token)
+    return {
+        "ok": True,
+        "user_id": owner_uid,
+        "token": token,
+        "first_name": first_name,
+        "profile_url": profile_url,
+        "photo_url": profile_url,
+    }
+
+
+@router.post("/password")
+async def owner_password_login(
+    payload: OwnerPasswordLoginRequest,
+    response: Response,
+    set_cookie: bool = Query(default=False),
+):
+    """Single-owner password login. Verifies the submitted password against the
+    hashed owner password stored in MongoDB and returns a signed access token."""
+    pwd = (payload.password or "").strip()
+    if not pwd:
+        raise HTTPException(status_code=400, detail="password is required")
+
+    owner_uid = _get_primary_owner_id()
+    if owner_uid <= 0:
+        raise HTTPException(status_code=500, detail="owner is not configured")
+
+    col = db_handler.get_collection("auth_config").collection
+    doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
+    stored = doc.get("password") if isinstance(doc, dict) else None
+    if not isinstance(stored, dict) or not stored:
+        raise HTTPException(status_code=503, detail="owner password is not set")
+
+    if not _verify_password(pwd, stored):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    users_col = db_handler.get_collection("users").collection
+    user = await users_col.find_one(
+        {"_id": owner_uid},
+        {"first_name": 1, "profile_url": 1, "photo_url": 1},
+    ) or {}
+    first_name = user.get("first_name") if isinstance(user.get("first_name"), str) else None
+    profile_url = user.get("profile_url") if isinstance(user.get("profile_url"), str) else None
+    if not profile_url:
+        profile_url = user.get("photo_url") if isinstance(user.get("photo_url"), str) else None
+
+    token = create_auth_token(user_id=owner_uid, first_name=first_name, profile_url=profile_url)
+    if set_cookie:
+        _set_auth_cookie(response=response, token=token)
+    return {
+        "ok": True,
+        "user_id": owner_uid,
+        "token": token,
+        "first_name": first_name,
+        "profile_url": profile_url,
+        "photo_url": profile_url,
+    }
+
+
+@router.post("/password/change")
+async def change_owner_password(
+    payload: ChangeOwnerPasswordRequest,
+    user_id: int = Depends(require_user_id),
+):
+    """Change the owner password. Requires a valid auth token."""
+    pwd = (payload.password or "").strip()
+    if len(pwd) < 6:
+        raise HTTPException(status_code=400, detail="password must be at least 6 characters")
+
+    now = time.time()
+    col = db_handler.get_collection("auth_config").collection
+    await col.update_one(
+        {"_id": "owner_password"},
+        {
+            "$set": {
+                "password": _hash_password(pwd),
+                "updated_at": now,
+                "updated_by": int(user_id),
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    return {"ok": True}
 
 
 @router.post("/cookie")

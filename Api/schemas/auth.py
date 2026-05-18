@@ -21,6 +21,18 @@ class SetCookieRequest(BaseModel):
     token: str
 
 
+class OwnerPasswordLoginRequest(BaseModel):
+    password: str
+
+
+class SetOwnerPasswordRequest(BaseModel):
+    password: str
+
+
+class ChangeOwnerPasswordRequest(BaseModel):
+    password: str
+
+
 class FCMTokenRequest(BaseModel):
     fcm_token: str
 

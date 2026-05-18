@@ -74,6 +74,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
@@ -3422,6 +3427,12 @@ private fun ApiScreen(
     var logsByApi by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     var logsLoadingApiUrl by remember { mutableStateOf<String?>(null) }
     var logsErrorByApi by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var showPasswordDialog by remember { mutableStateOf(false) }
+    var passwordDialogApiUrl by remember { mutableStateOf("") }
+    var passwordDialogIsSetup by remember { mutableStateOf(false) }
+    var passwordInput by rememberSaveable { mutableStateOf("") }
+    var passwordDialogLoading by remember { mutableStateOf(false) }
+    var passwordDialogError by remember { mutableStateOf<String?>(null) }
 
     fun toggleLogs(apiUrl: String) {
         val normalized = normalizeApiInput(apiUrl)
@@ -3467,16 +3478,44 @@ private fun ApiScreen(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(top = 10.dp, bottom = 120.dp)
+            contentPadding = PaddingValues(top = 16.dp, bottom = 140.dp)
         ) {
             item {
                 if (savedApis.isEmpty()) {
-                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))) {
-                        Text(
-                            text = "No APIs saved yet. Tap + Add to create one.",
-                            modifier = Modifier.padding(16.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Warning",
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "No APIs saved",
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Tap the + button below to add your first API server.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 14.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
                     }
                 }
             }
@@ -3484,14 +3523,14 @@ private fun ApiScreen(
             items(savedApis) { api ->
                 val isSelected = api.url == currentApiUrl
                 val normalizedApiUrl = normalizeApiInput(api.url)
-                val lightActionContainerColor = MaterialTheme.colorScheme.primaryContainer
-                val lightActionContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                val isLogsExpanded = expandedLogsApiUrl == normalizedApiUrl
+
                 Card(
-                    shape = RoundedCornerShape(16.dp),
-                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary) else null,
+                    shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                    )
+                    ),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
                         modifier = Modifier
@@ -3500,64 +3539,146 @@ private fun ApiScreen(
                                 onClick = {},
                                 onLongClick = { apiToDelete = api }
                             )
-                            .padding(14.dp)
+                            .padding(16.dp)
                     ) {
-                        Text(text = api.name, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(text = api.url, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val useButtonContainerColor = if (isDarkTheme) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                lightActionContainerColor
-                            }
-                            val useButtonContentColor = if (isDarkTheme) Color.Black else lightActionContentColor
-                            Button(
-                                onClick = { onSave(api.url) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = useButtonContainerColor,
-                                    contentColor = useButtonContentColor
-                                ),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                            ) {
-                                Text(if (isSelected) "Active" else "Use")
-                            }
-                            val logsButtonContainerColor = if (isDarkTheme) MaterialTheme.colorScheme.tertiary else lightActionContainerColor
-                            val logsButtonContentColor = if (isDarkTheme) Color.Black else lightActionContentColor
-                            Button(
-                                onClick = { toggleLogs(api.url) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = logsButtonContainerColor,
-                                    contentColor = logsButtonContentColor
-                                ),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
-                            ) {
-                                Text(if (expandedLogsApiUrl == normalizedApiUrl) "Hide" else "Logs")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = api.name,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 16.sp
+                                )
+                                Text(
+                                    text = api.url,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontSize = 13.sp
+                                )
                             }
                         }
 
-                        if (expandedLogsApiUrl == normalizedApiUrl) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Card(
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            androidx.compose.material3.Surface(
+                                onClick = {
+                                    if (isSelected) {
+                                        onSave(api.url)
+                                        return@Surface
+                                    }
+                                    scope.launch {
+                                        passwordDialogLoading = true
+                                        passwordDialogError = null
+                                        passwordInput = ""
+                                        val status = getSetupStatus(api.url)
+                                        passwordDialogLoading = false
+                                        if (status.ok && status.needs_setup) {
+                                            passwordDialogApiUrl = api.url
+                                            passwordDialogIsSetup = true
+                                            showPasswordDialog = true
+                                        } else {
+                                            passwordDialogApiUrl = api.url
+                                            passwordDialogIsSetup = false
+                                            showPasswordDialog = true
+                                        }
+                                    }
+                                },
                                 shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHighest)
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(vertical = 10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.PlayArrow,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (isSelected) "Active" else "Use",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
+                            // Logs button
+                            androidx.compose.material3.Surface(
+                                onClick = { toggleLogs(api.url) },
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(vertical = 10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isLogsExpanded) Icons.Default.ExpandLess else Icons.AutoMirrored.Filled.List,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (isLogsExpanded) "Hide" else "Logs",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+
+                        if (isLogsExpanded) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                                )
                             ) {
                                 when {
                                     logsLoadingApiUrl == normalizedApiUrl -> {
-                                        Text(
-                                            text = "Loading logs…",
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(12.dp),
-                                            fontSize = 12.sp
-                                        )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            androidx.compose.material3.CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                            Text(
+                                                text = "Loading logs…",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 13.sp
+                                            )
+                                        }
                                     }
                                     logsByApi[normalizedApiUrl]?.isNotEmpty() == true -> {
                                         LazyColumn(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .height(220.dp)
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
                                             verticalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             items(logsByApi[normalizedApiUrl]!!.take(120)) { line ->
@@ -3575,24 +3696,14 @@ private fun ApiScreen(
                                         Text(
                                             text = logsErrorByApi[normalizedApiUrl] ?: "No logs found.",
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(12.dp),
-                                            fontSize = 12.sp
+                                            modifier = Modifier.padding(16.dp),
+                                            fontSize = 13.sp
                                         )
                                     }
                                 }
                             }
                         }
                     }
-                }
-            }
-
-            if (isLoadingLatest) {
-                item {
-                    Text(
-                        text = "Loading latest songs...",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 13.sp
-                    )
                 }
             }
         }
@@ -3602,6 +3713,7 @@ private fun ApiScreen(
             onClick = { showAddApiDialog = true },
             containerColor = fabContainerColor,
             contentColor = Color.Black,
+            shape = CircleShape,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .navigationBarsPadding()
@@ -3679,6 +3791,113 @@ private fun ApiScreen(
             },
             dismissButton = {
                 TextButton(onClick = { apiToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!passwordDialogLoading) {
+                    showPasswordDialog = false
+                    passwordDialogError = null
+                }
+            },
+            title = {
+                Text(
+                    if (passwordDialogIsSetup) "Create Admin Password"
+                    else "Enter API Password"
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (passwordDialogIsSetup) {
+                        Text(
+                            "This server hasn't been set up yet. Create a password to secure it.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedTextField(
+                        value = passwordInput,
+                        onValueChange = {
+                            passwordInput = it
+                            passwordDialogError = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Password") },
+                        singleLine = true,
+                        enabled = !passwordDialogLoading,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    )
+                    if (passwordDialogError != null) {
+                        Text(
+                            text = passwordDialogError!!,
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 13.sp
+                        )
+                    }
+                    if (passwordDialogLoading) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (passwordInput.isBlank()) {
+                            passwordDialogError = "Password is required"
+                            return@TextButton
+                        }
+                        scope.launch {
+                            passwordDialogLoading = true
+                            passwordDialogError = null
+                            val response = if (passwordDialogIsSetup) {
+                                setupOwnerPassword(passwordDialogApiUrl, passwordInput)
+                            } else {
+                                ownerLogin(passwordDialogApiUrl, passwordInput)
+                            }
+                            passwordDialogLoading = false
+                            if (response.ok && response.token != null) {
+                                val userData = UserData(
+                                    id = response.user_id ?: 0,
+                                    token = response.token,
+                                    firstName = response.first_name ?: "Owner",
+                                    profileUrl = response.profile_url ?: "",
+                                    photoUrl = response.photo_url ?: ""
+                                )
+                                AuthPreferences.saveUser(context, userData)
+                                showPasswordDialog = false
+                                passwordInput = ""
+                                onSave(passwordDialogApiUrl)
+                            } else {
+                                passwordDialogError = if (passwordDialogIsSetup) {
+                                    "Setup failed. The server may already be configured."
+                                } else {
+                                    "Invalid password. Please try again."
+                                }
+                            }
+                        }
+                    },
+                    enabled = passwordInput.isNotBlank() && !passwordDialogLoading
+                ) {
+                    Text(if (passwordDialogIsSetup) "Create" else "Login")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        if (!passwordDialogLoading) {
+                            showPasswordDialog = false
+                            passwordDialogError = null
+                        }
+                    }
+                ) {
                     Text("Cancel")
                 }
             }

@@ -1037,3 +1037,129 @@ html[data-theme='light'] .prefs-segment-btn.is-active {
     font-size: 14px;
   }
 }
+
+.home-auth-card {
+  margin-bottom: 24px;
+  border-radius: 16px;
+  background: var(--surface-0);
+  border: 1px solid var(--border-1);
+  overflow: hidden;
+}
+
+.home-auth-card-content {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.home-auth-card-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  color: var(--app-fg-muted);
+}
+
+.home-auth-card-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.home-auth-card-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--app-fg);
+  margin: 0 0 6px;
+}
+
+.home-auth-card-desc {
+  font-size: 14px;
+  color: var(--app-fg-muted);
+  margin: 0 0 16px;
+}
+
+.home-auth-card-form {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+}
+
+.home-auth-card-input {
+  flex: 1;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--border-1);
+  background: var(--surface-1);
+  color: var(--app-fg);
+  padding: 0 14px;
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.home-auth-card-input:focus {
+  border-color: var(--primary-accent);
+}
+
+.home-auth-card-input::placeholder {
+  color: var(--app-fg-muted);
+}
+
+.home-auth-card-btn {
+  height: 44px;
+  padding: 0 20px;
+  border-radius: 12px;
+  border: none;
+  background: var(--primary-accent);
+  color: #000;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+  white-space: nowrap;
+}
+
+.home-auth-card-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.home-auth-card-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--error-fg, #ff6b6b);
+}
+
+.home-auth-card-footer {
+  margin: 14px 0 0;
+}
+
+.home-auth-card-link {
+  background: none;
+  border: none;
+  color: var(--primary-accent);
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+@media (max-width: 768px) {
+  .home-auth-card-content {
+    padding: 20px;
+  }
+
+  .home-auth-card-form {
+    flex-direction: column;
+  }
+
+  .home-auth-card-btn {
+    width: 100%;
+  }
+}

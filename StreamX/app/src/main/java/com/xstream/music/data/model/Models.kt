@@ -213,6 +213,13 @@ data class UserProfile(
     val profileUrl: String
 )
 
+data class SetupStatusResponse(
+    val ok: Boolean,
+    val configured: Boolean = false,
+    val needs_setup: Boolean = true,
+    val owner_id: Long? = null
+)
+
 data class LoginRequest(
     val username: String,
     val password: String

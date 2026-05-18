@@ -12,11 +12,12 @@ import { LatestSongsPage } from './pages/LatestSongs.js'
 import { RandomMixPage } from './pages/RandomMix.js'
 import { FavoritesPage } from './pages/Favorites.js'
 import { LoginPage } from './pages/Login.js'
+import { SetupPage } from './pages/Setup.js'
 import { JamPage } from './pages/JamPage.js'
 import { ProfilePage } from './pages/ProfilePage.js'
 import { SearchPage } from './pages/Search.js'
 import { platform } from './platform.js'
-import { API_BASE_URL, ensureAuthCookieFromToken, getAuthToken, getRedSelectorEnabled, getThemeMode, getFloatingNavTopPad, setAuthToken } from './services/api.js'
+import { API_BASE_URL, ensureAuthCookieFromToken, getAuthToken, getRedSelectorEnabled, getThemeMode, getFloatingNavTopPad, setAuthToken, api } from './services/api.js'
 import './App.css'
 
 const RouteMotion = ({ children }: { children: ReactNode }) => {
@@ -64,6 +65,7 @@ const AnimatedRoutes = () => {
         <Route path="/random-mix" element={<RouteMotion><RandomMixPage /></RouteMotion>} />
         <Route path="/favorites" element={<RouteMotion><FavoritesPage /></RouteMotion>} />
         <Route path="/login" element={<RouteMotion><LoginPage /></RouteMotion>} />
+        <Route path="/setup" element={<RouteMotion><SetupPage /></RouteMotion>} />
         <Route path="/jam/:jamId" element={<RouteMotion><JamPage /></RouteMotion>} />
         <Route path="/profile" element={<RouteMotion><ProfilePage /></RouteMotion>} />
         <Route path="/search" element={<RouteMotion><SearchPage /></RouteMotion>} />
@@ -79,11 +81,30 @@ function App() {
   const [redSelectorEnabled, setRedSelectorEnabledState] = useState(getRedSelectorEnabled())
   const [themeMode, setThemeModeState] = useState(getThemeMode())
   const [floatingNavTopPad, setFloatingNavTopPadState] = useState<number | null>(() => getFloatingNavTopPad())
+  const [setupChecked, setSetupChecked] = useState(false)
 
   useEffect(() => {
     const token = getAuthToken()
     if (!token) return
     ensureAuthCookieFromToken(token).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const check = async () => {
+      try {
+        const status = await api.getSetupStatus()
+        if (!cancelled && status.needs_setup && window.location.pathname !== '/setup') {
+          window.location.replace('/setup')
+          return
+        }
+      } catch {
+        // If the server is unreachable, let the app load normally
+      }
+      if (!cancelled) setSetupChecked(true)
+    }
+    check()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -265,6 +286,15 @@ function App() {
       }
     }
   }, [])
+
+  if (!setupChecked && window.location.pathname !== '/setup') {
+    return (
+      <div
+        className={`${isTelegram ? 'app app--telegram' : 'app'}${isWindows ? ' app--windows' : ''}${redSelectorEnabled ? ' app--red-selector' : ''}`}
+        data-theme={themeMode}
+      />
+    )
+  }
 
   return (
     <PlayerProvider>

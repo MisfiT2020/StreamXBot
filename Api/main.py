@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from Api.deps.db import init_db
+from Api.utils.auth_middleware import AuthMiddleware
 from Api.routers.browse import router as browse_router
 from Api.routers.share import router as share_router
 from Api.routers.auth import router as auth_router
@@ -46,6 +47,7 @@ app = FastAPI(lifespan=lifespan)
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
+app.add_middleware(AuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

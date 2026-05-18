@@ -629,10 +629,12 @@ export const api = {
     const existing = browseTracksInFlight.get(page)
     if (existing) return existing
 
+    const token = getAuthToken()
     const promise = fetch(`${API_BASE_URL}/browse?page=${page}`, {
       method: 'GET',
       headers: {
         accept: 'application/json',
+        ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
       },
     })
       .then((response) => {
@@ -660,10 +662,12 @@ export const api = {
       limit: String(limit),
     }).toString()
 
+    const token = getAuthToken()
     const response = await fetch(`${API_BASE_URL}/tracks/search?${search}`, {
       method: 'GET',
       headers: {
         accept: 'application/json',
+        ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
       },
     })
 
@@ -684,7 +688,6 @@ export const api = {
 
   getStreamUrl(trackId: string): string {
     const baseUrl = `${API_BASE_URL}/tracks/${encodeURIComponent(trackId)}/stream`
-    if (getAuthCookieEnabled()) return baseUrl
     const token = getAuthToken()
     if (!token) return baseUrl
     try {
@@ -722,10 +725,12 @@ export const api = {
     if (existing) return existing
 
     try {
+      const token = getAuthToken()
       const promise = fetch(`${API_BASE_URL}/tracks/${trackId}/warm`, {
         method: 'GET',
         headers: {
           accept: 'application/json',
+          ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
         },
         cache: 'no-store',
       })
@@ -748,10 +753,12 @@ export const api = {
   },
 
   async getTrackDetails(trackId: string): Promise<TrackDetailsResponse> {
+    const token = getAuthToken()
     const response = await fetch(`${API_BASE_URL}/tracks/${trackId}`, {
       method: 'GET',
       headers: {
         accept: 'application/json',
+        ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
       },
     })
 
@@ -817,10 +824,12 @@ export const api = {
   },
 
   async getTrackLyrics(trackId: string): Promise<TrackLyricsResponse> {
+    const token = getAuthToken()
     const response = await fetch(`${API_BASE_URL}/tracks/${trackId}/lyrics`, {
       method: 'GET',
       headers: {
         accept: 'application/json',
+        ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
       },
     })
 
@@ -1323,6 +1332,103 @@ export const api = {
       )
     }
 
+    return response.json()
+  },
+
+  async getSetupStatus(): Promise<{ ok: boolean; configured: boolean; needs_setup: boolean; owner_id?: number | null }> {
+    const response = await fetch(`${API_BASE_URL}/auth/setup/status`, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to get setup status: ${response.status}`)
+    }
+    return response.json()
+  },
+
+  async setupOwnerPassword(password: string): Promise<{ ok: boolean; user_id: number; token: string }> {
+    const response = await fetch(`${API_BASE_URL}/auth/setup`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ password }),
+    })
+
+    if (!response.ok) {
+      let body = ''
+      try { body = await response.text() } catch { body = '' }
+      throw new Error(
+        `Setup failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+      )
+    }
+
+    const result = await response.json()
+    if (result.token) {
+      setAuthToken(result.token)
+      await ensureAuthCookieFromToken(result.token)
+    }
+    return result
+  },
+
+  async ownerLogin(password: string): Promise<{ ok: boolean; user_id: number; token: string }> {
+    const cookieDomain = getCookieDomainForApi()
+    const tokenUrl = new URL(`${API_BASE_URL}/auth/password`)
+    const cookieUrl = new URL(tokenUrl.toString())
+    cookieUrl.searchParams.set('set_cookie', 'true')
+    if (cookieDomain) cookieUrl.searchParams.set('cookie_domain', cookieDomain)
+
+    const response = await fetch(cookieUrl.toString(), {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ password }),
+    })
+
+    if (!response.ok) {
+      let body = ''
+      try { body = await response.text() } catch { body = '' }
+      throw new Error(
+        `Login failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+      )
+    }
+
+    const result = await response.json()
+    if (result.token) {
+      setAuthToken(result.token)
+      await ensureAuthCookieFromToken(result.token)
+    }
+    return result
+  },
+
+  async changeOwnerPassword(password: string): Promise<{ ok: boolean }> {
+    const token = getAuthToken()
+    if (!token) {
+      throw new Error('Not authenticated')
+    }
+    const response = await fetch(`${API_BASE_URL}/auth/password/change`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Auth-Token': token,
+        'Authorization': `Bearer ${token}`,
+      },
+      credentials: 'omit',
+      body: JSON.stringify({ password }),
+    })
+    if (!response.ok) {
+      let body = ''
+      try { body = await response.text() } catch { body = '' }
+      throw new Error(
+        `Failed to change password: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+      )
+    }
     return response.json()
   },
 }
