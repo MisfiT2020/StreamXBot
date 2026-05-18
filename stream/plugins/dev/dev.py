@@ -475,6 +475,10 @@ async def edit_setting(client: Client, query: CallbackQuery):
                 InlineKeyboardButton("Remove", callback_data=f"manage_remove_{key}")
             ],
             [
+                InlineKeyboardButton("Type", callback_data=f"type_menu_{key}"),
+                InlineKeyboardButton("Clear", callback_data=f"clear_setting_{key}")
+            ],
+            [
                 InlineKeyboardButton("Back", callback_data=f"back_settings_{current_page}_True"),
                 InlineKeyboardButton("Close", callback_data="close_settings")
             ]
@@ -497,6 +501,10 @@ async def edit_setting(client: Client, query: CallbackQuery):
 
     keyboard = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("Type", callback_data=f"type_menu_{key}"),
+            InlineKeyboardButton("Clear", callback_data=f"clear_setting_{key}")
+        ],
+        [
             InlineKeyboardButton("Back", callback_data=f"back_settings_{current_page}_True"),
             InlineKeyboardButton("Close", callback_data="close_settings")
         ]
@@ -507,6 +515,130 @@ async def edit_setting(client: Client, query: CallbackQuery):
         f"Send new value for {key}:",
         keyboard
     )
+
+
+@Client.on_callback_query(filters.regex(r"^clear_setting_") & dev_cmd)
+async def clear_setting_callback(client: Client, query: CallbackQuery):
+    key = query.data.split("_", 2)[2]
+    user_id = query.from_user.id
+    
+    current_page = 0
+    for row in query.message.reply_markup.inline_keyboard:
+        for button in row:
+            if "•" in button.text:
+                current_page = int(button.callback_data.split("_")[1])
+                break
+                
+    current_value = Config.get(key)
+    if isinstance(current_value, list):
+        empty_val = []
+    elif isinstance(current_value, bool):
+        empty_val = False
+    elif isinstance(current_value, int):
+        empty_val = 0
+    elif isinstance(current_value, float):
+        empty_val = 0.0
+    else:
+        empty_val = ""
+        
+    try:
+        await Config.update_config(key, empty_val)
+        await query.answer(f"Cleared {key}!", show_alert=True)
+        keyboard = await get_settings_keyboard(page=current_page, edit_mode=True)
+        await edit_message(
+            query,
+            f"Config Variables | Page: {current_page} | State: edit\n\nCleared {key}.",
+            keyboard
+        )
+    except Exception as e:
+        await query.answer(f"Failed to clear {key}: {e}", show_alert=True)
+
+
+@Client.on_callback_query(filters.regex(r"^type_menu_") & dev_cmd)
+async def type_menu_callback(client: Client, query: CallbackQuery):
+    key = query.data.split("_", 2)[2]
+    user_id = query.from_user.id
+    
+    current_page = 0
+    for row in query.message.reply_markup.inline_keyboard:
+        for button in row:
+            if "•" in button.text:
+                current_page = int(button.callback_data.split("_")[1])
+                break
+
+    override_type = Config._OVERRIDE_TYPES.get(key, "default")
+    default_type = type(getattr(Config, key)).__name__
+    
+    caption = (
+        f"**Type Configuration for {key}**\n\n"
+        f"• Default type: `{default_type}`\n"
+        f"• Active type: `{override_type if override_type != 'default' else default_type + ' (default)'}`\n\n"
+        f"Choose a new type for this setting:"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("str" + (" ✓" if override_type == "str" else ""), callback_data=f"set_type_{key}_str"),
+            InlineKeyboardButton("int" + (" ✓" if override_type == "int" else ""), callback_data=f"set_type_{key}_int"),
+        ],
+        [
+            InlineKeyboardButton("bool" + (" ✓" if override_type == "bool" else ""), callback_data=f"set_type_{key}_bool"),
+            InlineKeyboardButton("list" + (" ✓" if override_type == "list" else ""), callback_data=f"set_type_{key}_list"),
+        ],
+        [
+            InlineKeyboardButton("Default" + (" ✓" if override_type == "default" else ""), callback_data=f"set_type_{key}_default"),
+        ],
+        [
+            InlineKeyboardButton("Back", callback_data=f"edit_{key}"),
+            InlineKeyboardButton("Close", callback_data="close_settings")
+        ]
+    ])
+    
+    await edit_message(query, caption, keyboard)
+
+
+@Client.on_callback_query(filters.regex(r"^set_type_") & dev_cmd)
+async def set_type_callback(client: Client, query: CallbackQuery):
+    parts = query.data.split("_")
+    type_str = parts[-1]
+    key = "_".join(parts[2:-1])
+    
+    try:
+        await Config.update_config_type(key, type_str)
+        await query.answer(f"Type of {key} updated to {type_str}!", show_alert=True)
+    except Exception as e:
+        await query.answer(f"Failed to update type: {e}", show_alert=True)
+        return
+        
+    override_type = Config._OVERRIDE_TYPES.get(key, "default")
+    default_type = type(getattr(Config, key)).__name__
+    
+    caption = (
+        f"**Type Configuration for {key}**\n\n"
+        f"• Default type: `{default_type}`\n"
+        f"• Active type: `{override_type if override_type != 'default' else default_type + ' (default)'}`\n\n"
+        f"Choose a new type for this setting:"
+    )
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("str" + (" ✓" if override_type == "str" else ""), callback_data=f"set_type_{key}_str"),
+            InlineKeyboardButton("int" + (" ✓" if override_type == "int" else ""), callback_data=f"set_type_{key}_int"),
+        ],
+        [
+            InlineKeyboardButton("bool" + (" ✓" if override_type == "bool" else ""), callback_data=f"set_type_{key}_bool"),
+            InlineKeyboardButton("list" + (" ✓" if override_type == "list" else ""), callback_data=f"set_type_{key}_list"),
+        ],
+        [
+            InlineKeyboardButton("Default" + (" ✓" if override_type == "default" else ""), callback_data=f"set_type_{key}_default"),
+        ],
+        [
+            InlineKeyboardButton("Back", callback_data=f"edit_{key}"),
+            InlineKeyboardButton("Close", callback_data="close_settings")
+        ]
+    ])
+    
+    await edit_message(query, caption, keyboard)
 
 @Client.on_callback_query(filters.regex(r"^back_settings_") & dev_cmd)
 async def back_settings(client: Client, query: CallbackQuery):

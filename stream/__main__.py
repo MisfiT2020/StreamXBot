@@ -1,5 +1,5 @@
-import os
 import asyncio
+import os
 
 if os.name != "nt":
     try:
@@ -13,13 +13,21 @@ try:
     from pyrogram import idle
 except Exception:
     idle = None
-from uvicorn import Config as UvicornConfig, Server as UvicornServer
+from uvicorn import Config as UvicornConfig
+from uvicorn import Server as UvicornServer
 
-from . import bot, scheduler, add_daily_playlist_jobs, add_user_profile_refresh_jobs, add_deleted_track_reconcile_jobs
+from stream.core.config_manager import Config
 from stream.plugins.dev.updater import restart_notification
+
+from . import (
+    add_daily_playlist_jobs,
+    add_deleted_track_reconcile_jobs,
+    add_user_profile_refresh_jobs,
+    bot,
+    scheduler,
+)
 from .database.MongoDb import db_handler
 from .helpers.logger import LOGGER
-from stream.core.config_manager import Config
 
 
 def get_api_port() -> int:
@@ -74,7 +82,9 @@ async def cancel_pyrogram_pending_tasks(*, timeout: float = 3.0) -> None:
         t.cancel()
 
     try:
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=timeout)
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=timeout
+        )
     except asyncio.TimeoutError:
         pass
 
@@ -86,6 +96,7 @@ async def close_aiohttp_sessions() -> None:
         await close_stream_hubs()
     except Exception:
         pass
+
 
 async def main():
     log = LOGGER(__name__)
@@ -178,6 +189,10 @@ async def main():
         raise SystemExit("bot is disabled but ONLY_API is False")
 
     from stream import initialize_multi_clients, stop_multi_clients
+    from stream.plugins.db.audioIndex import (
+        start_enrichment_workers,
+        stop_enrichment_workers,
+    )
     from stream.plugins.userBot import start_userbot_service, stop_userbot_service
 
     await bot.start()
@@ -189,6 +204,7 @@ async def main():
 
     log.info("Client started. Running until stopped.")
     userbot, userbot_task = await start_userbot_service(log)
+    start_enrichment_workers()
     log.info(f"{me.first_name} (@{me.username}) [ID: {me.id}]")
 
     try:
@@ -205,6 +221,10 @@ async def main():
     finally:
         log.info("Shutting down...")
 
+        try:
+            await stop_enrichment_workers()
+        except Exception:
+            pass
         if server:
             server.should_exit = True
             if server_task:
@@ -259,7 +279,7 @@ async def main():
         log.info("Client stopped.")
 
 
-if __name__ == "__main__":    
+if __name__ == "__main__":
     try:
         if bot is not None and getattr(bot, "loop", None) is not None:
             bot.loop.run_until_complete(main())

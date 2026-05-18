@@ -1,14 +1,19 @@
 import json
 import re
 from importlib import import_module
+
 from stream.helpers.logger import LOGGER
+
 
 def _get_db_handler():
     from stream.database.MongoDb import db_handler
+
     return db_handler
+
 
 class RestartRequired(RuntimeError):
     """Raised after a config value is persisted that requires a process restart."""
+
 
 class Config:
     SECRET_KEYS = {
@@ -30,8 +35,8 @@ class Config:
     SESSION_STRING = ""
     MONGO_URI = ""
     DATABASE_NAME = ""
-    OWNER_ID = []      
-    SUDO_USERS = [] 
+    OWNER_ID = []
+    SUDO_USERS = []
     SECRET_KEY = ""
     DEBUG = ""
     FIREBASE_CREDENTIALS = ""
@@ -43,6 +48,7 @@ class Config:
     CORS_ORIGIN = ""
     COOKIE_SECURE = ""
     COOKIE_SAMESITE = ""
+    USERBOT_INDEX = ""
     CHANNEL_ID = 0
     DUMP_CHANNEL_ID = 0
     LRCLIB = False
@@ -50,6 +56,7 @@ class Config:
     SPOTIFY_CLIENT_ID = ""
     SPOTIFY_CLIENT_SECRET = ""
     SOURCE_CHANNEL_IDS = []
+    CHAT_TOPIC = 0
     USERBOT_COOLDOWN_SEC = 2
     USERBOT_POLL_INTERVAL_SEC = 300
     USERBOT_BATCH_SIZE = 50
@@ -59,8 +66,8 @@ class Config:
     MULTI_CLIENTS_3 = ""
     MULTI_CLIENTS_4 = ""
     MULTI_CLIENT_TOKENS: list[str] = []
-    COOKIES_DIR = "cookies/"  
-
+    COOKIES_DIR = "cookies/"
+    _OVERRIDE_TYPES: dict[str, str] = {}
 
     @classmethod
     def _is_secret_key(cls, key: str) -> bool:
@@ -102,8 +109,17 @@ class Config:
     def _collect_multi_client_tokens(cls, mapping: dict[str, object]) -> list[str]:
         out: list[str] = []
 
-        for k in ("MULTI_CLIENTS_1", "MULTI_CLIENTS_2", "MULTI_CLIENTS_3", "MULTI_CLIENTS_4"):
-            v = (mapping.get(k) or "").strip() if isinstance(mapping.get(k), str) else str(mapping.get(k) or "").strip()
+        for k in (
+            "MULTI_CLIENTS_1",
+            "MULTI_CLIENTS_2",
+            "MULTI_CLIENTS_3",
+            "MULTI_CLIENTS_4",
+        ):
+            v = (
+                (mapping.get(k) or "").strip()
+                if isinstance(mapping.get(k), str)
+                else str(mapping.get(k) or "").strip()
+            )
             if v:
                 out.append(v)
 
@@ -111,7 +127,10 @@ class Config:
         extras2: list[str] = []
         for k, v in mapping.items():
             ks = str(k or "").strip()
-            if not ks.startswith("MULTI_CLIENTS_") or ks in {"MULTI_CLIENTS", "MULTI_CLIENT_TOKENS"}:
+            if not ks.startswith("MULTI_CLIENTS_") or ks in {
+                "MULTI_CLIENTS",
+                "MULTI_CLIENT_TOKENS",
+            }:
                 continue
             suffix = ks[len("MULTI_CLIENTS_") :]
             raw = str(v or "").strip()
@@ -147,7 +166,12 @@ class Config:
         for key in dir(external):
             if key.isupper() and hasattr(cls, key):
                 value = getattr(external, key)
-                if key in {"OWNER_ID", "SOURCE_CHANNEL_IDS", "SUDO_USERS", "PREMIUM_USERS"}:
+                if key in {
+                    "OWNER_ID",
+                    "SOURCE_CHANNEL_IDS",
+                    "SUDO_USERS",
+                    "PREMIUM_USERS",
+                }:
                     value = cls._parse_id_list(value)
                 setattr(cls, key, value)
         cls.MULTI_CLIENT_TOKENS = cls._collect_multi_client_tokens(ext_map)
@@ -172,7 +196,9 @@ class Config:
             doc = await dbh.botsettings.read_document("bot_config")
             if not doc:
                 LOGGER(__name__).info("Creating bot_config with defaults")
-                await dbh.botsettings.update_document("bot_config", cls.get_all_config())
+                await dbh.botsettings.update_document(
+                    "bot_config", cls.get_all_config()
+                )
                 doc = await dbh.botsettings.read_document("bot_config")
             else:
                 # backfill any missing or empty keys without clobbering non-empty DB values
@@ -180,24 +206,34 @@ class Config:
                 updates = {}
                 for k, v in defaults.items():
                     # if key missing OR DB value is empty while default is non-empty -> backfill
-                    if k not in doc or (cls._is_empty_value(doc.get(k)) and not cls._is_empty_value(v)):
+                    if k not in doc or (
+                        cls._is_empty_value(doc.get(k)) and not cls._is_empty_value(v)
+                    ):
                         updates[k] = v
                 if updates:
                     await dbh.botsettings.update_document("bot_config", updates)
                     doc.update(updates)
+            
+            cls._OVERRIDE_TYPES = doc.get("_types") or {}
 
             # apply DB overrides with type processing
             for key in (k for k in dir(cls) if k.isupper() and k != "SECRET_KEYS"):
                 if cls._is_secret_key(key):
-                    if key in doc and str(doc.get(key) or "") != str(getattr(cls, key) or ""):
-                        LOGGER(__name__).warning(f"{key} in DB differs from ENV — ENV is being used")
+                    if key in doc and str(doc.get(key) or "") != str(
+                        getattr(cls, key) or ""
+                    ):
+                        LOGGER(__name__).warning(
+                            f"{key} in DB differs from ENV — ENV is being used"
+                        )
                     continue
                 if key in doc:
                     setattr(cls, key, cls._process_value(key, doc[key]))
 
             for key in doc.keys():
                 if cls._is_secret_key(str(key)) and str(key) not in dir(cls):
-                    LOGGER(__name__).warning(f"{key} in DB differs from ENV — ENV is being used")
+                    LOGGER(__name__).warning(
+                        f"{key} in DB differs from ENV — ENV is being used"
+                    )
 
             cls._validate_config()
         except Exception as e:
@@ -209,6 +245,7 @@ class Config:
         """Reload in-memory config from DB without touching the DB."""
         dbh = _get_db_handler()
         data = await dbh.botsettings.read_document("bot_config") or {}
+        cls._OVERRIDE_TYPES = data.get("_types") or {}
         for key in (k for k in dir(cls) if k.isupper() and k != "SECRET_KEYS"):
             if cls._is_secret_key(key):
                 continue
@@ -234,12 +271,41 @@ class Config:
         except Exception as e:
             # Roll back in-memory change to keep runtime consistent
             setattr(cls, key, previous)
-            LOGGER(__name__).error(f"Config.update_config failed to persist '{key}': {e}")
+            LOGGER(__name__).error(
+                f"Config.update_config failed to persist '{key}': {e}"
+            )
             raise
 
         if key in cls.SECRET_KEYS:
             raise RestartRequired(f"{key} updated and persisted; restart required")
 
+        await cls.reload_config()
+        return processed
+
+    @classmethod
+    async def update_config_type(cls, key, type_str):
+        """Update the type of a config key in the database and reload config."""
+        if not key.isupper() or not hasattr(cls, key):
+            raise KeyError(f"Unknown config key: {key}")
+        
+        dbh = _get_db_handler()
+        doc = await dbh.botsettings.read_document("bot_config") or {}
+        types = doc.get("_types") or {}
+        
+        if type_str is None or type_str == "default":
+            types.pop(key, None)
+        else:
+            types[key] = type_str
+            
+        await dbh.botsettings.update_document("bot_config", {"_types": types})
+        
+        # Reprocess current value with new type
+        cls._OVERRIDE_TYPES = types
+        current_value = getattr(cls, key)
+        processed = cls._process_value(key, current_value)
+        setattr(cls, key, processed)
+        
+        await dbh.botsettings.update_document("bot_config", {key: processed})
         await cls.reload_config()
         return processed
 
@@ -274,8 +340,39 @@ class Config:
             return cls._parse_id_list(value)
         if key == "MULTI_CLIENT_TOKENS":
             return cls._parse_str_list(value)
+        if key == "CHAT_TOPIC":
+            if isinstance(value, str):
+                s = value.strip()
+                if s.lower() == "all":
+                    return "all"
+                try:
+                    return int(s)
+                except (TypeError, ValueError):
+                    return 0
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
 
-        target_type = type(getattr(cls, key))
+        # Get overridden or default target type
+        override_type_str = getattr(cls, "_OVERRIDE_TYPES", {}).get(key)
+        if override_type_str == "int":
+            target_type = int
+        elif override_type_str == "float":
+            target_type = float
+        elif override_type_str == "bool":
+            target_type = bool
+        elif override_type_str == "str":
+            target_type = str
+        elif override_type_str == "list":
+            target_type = list
+        else:
+            target_type = type(getattr(cls, key))
+
+        if target_type is list:
+            if key in {"OWNER_ID", "SOURCE_CHANNEL_IDS", "SUDO_USERS", "PREMIUM_USERS"}:
+                return cls._parse_id_list(value)
+            return cls._parse_str_list(value)
 
         if target_type is bool:
             if isinstance(value, str):
@@ -304,11 +401,19 @@ class Config:
         """Fail fast on obv broken configs."""
         only_api = bool(getattr(cls, "ONLY_API", False))
         if only_api:
-            missing = [f for f in ["MONGO_URI", "DATABASE_NAME", "SECRET_KEY"] if not getattr(cls, f)]
+            missing = [
+                f
+                for f in ["MONGO_URI", "DATABASE_NAME", "SECRET_KEY"]
+                if not getattr(cls, f)
+            ]
             if missing:
                 raise SystemExit(f"Missing required fields: {', '.join(missing)}")
         else:
-            missing = [f for f in ["API_ID", "API_HASH", "BOT_TOKEN", "OWNER_ID", "MONGO_URI"] if not getattr(cls, f)]
+            missing = [
+                f
+                for f in ["API_ID", "API_HASH", "BOT_TOKEN", "OWNER_ID", "MONGO_URI"]
+                if not getattr(cls, f)
+            ]
             if missing:
                 raise SystemExit(f"Missing required fields: {', '.join(missing)}")
 
@@ -321,7 +426,9 @@ class Config:
             if not re.fullmatch(r"\d+:[A-Za-z0-9_\-]{20,}", cls.BOT_TOKEN or ""):
                 raise SystemExit("BOT_TOKEN format looks invalid")
 
-        if cls.MONGO_URI and not str(cls.MONGO_URI).startswith(("mongodb://", "mongodb+srv://")):
+        if cls.MONGO_URI and not str(cls.MONGO_URI).startswith(
+            ("mongodb://", "mongodb+srv://")
+        ):
             raise SystemExit("MONGO_URI must start with mongodb:// or mongodb+srv://")
 
     @classmethod
@@ -330,4 +437,6 @@ class Config:
 
     @classmethod
     def get_all_config(cls) -> dict:
-        return {k: getattr(cls, k) for k in dir(cls) if k.isupper() and k != "SECRET_KEYS"}
+        return {
+            k: getattr(cls, k) for k in dir(cls) if k.isupper() and k != "SECRET_KEYS"
+        }

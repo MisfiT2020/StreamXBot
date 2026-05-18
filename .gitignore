@@ -6,6 +6,7 @@ config.py
 *.txt
 .env
 tes*
+export/
 *_cache
 GenCovers/
 !requirements.txt

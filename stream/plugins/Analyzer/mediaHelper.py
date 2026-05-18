@@ -1,19 +1,20 @@
+import asyncio
 import base64
 import io
 import json
-import time
+import os
 import re
 import subprocess
-import asyncio
-import os
 import tempfile
+import time
 from os import path as ospath
 from urllib.parse import quote, urlparse
 
 from aiofiles import open as aiopen
-from aiofiles.os import mkdir, path as aiopath, remove as aioremove
+from aiofiles.os import mkdir
+from aiofiles.os import path as aiopath
+from aiofiles.os import remove as aioremove
 from aiohttp import ClientSession
-
 from pyrogram import filters
 from pyrogram.types import Message
 
@@ -53,6 +54,7 @@ SECTION_EMOJI = {
 
 LOG = LOGGER(__name__)
 
+
 async def _get_download_lock(key: str) -> asyncio.Lock:
     async with _DOWNLOAD_LOCKS_GUARD:
         lock = _DOWNLOAD_LOCKS.get(key)
@@ -60,6 +62,15 @@ async def _get_download_lock(key: str) -> asyncio.Lock:
             lock = asyncio.Lock()
             _DOWNLOAD_LOCKS[key] = lock
         return lock
+
+
+def _stream_media_client(message: Message):
+    client = getattr(message, "_client", None) or getattr(message, "client", None)
+    if client is not None and hasattr(client, "stream_media"):
+        return client
+    if bot is not None and hasattr(bot, "stream_media"):
+        return bot
+    raise RuntimeError("No Pyrogram client available for stream_media")
 
 
 def _sanitize_filename(value: str) -> str:
@@ -102,13 +113,7 @@ def _pick_media(msg: Message):
 def _md_clean(text: str) -> str:
     if not text:
         return ""
-    return (
-        str(text)
-        .replace("`", "'")
-        .replace("[", "(")
-        .replace("]", ")")
-        .strip()
-    )
+    return str(text).replace("`", "'").replace("[", "(").replace("]", ")").strip()
 
 
 def _parse_mediainfo(output: str) -> dict[str, dict[str, str]]:
@@ -117,7 +122,14 @@ def _parse_mediainfo(output: str) -> dict[str, dict[str, str]]:
     for raw in (output or "").splitlines():
         line = raw.rstrip("\n")
         header = line.strip()
-        if header and header.lower() in {"general", "audio", "video", "text", "image", "menu"}:
+        if header and header.lower() in {
+            "general",
+            "audio",
+            "video",
+            "text",
+            "image",
+            "menu",
+        }:
             current = header.lower()
             sections.setdefault(current, {})
             continue
@@ -313,7 +325,9 @@ def _parse_duration_seconds(value: str) -> int | None:
     return None
 
 
-def extract_audio_metadata_normalized(output: str, duration_sec: int | None = None) -> dict:
+def extract_audio_metadata_normalized(
+    output: str, duration_sec: int | None = None
+) -> dict:
     sections = _parse_mediainfo(output)
     general = sections.get("general", {})
     audio = sections.get("audio", {})
@@ -327,11 +341,15 @@ def extract_audio_metadata_normalized(output: str, duration_sec: int | None = No
     recorded_date = general.get("recorded date") or ""
 
     if duration_sec is None:
-        duration_sec = _parse_duration_seconds(general.get("duration") or audio.get("duration") or "")
+        duration_sec = _parse_duration_seconds(
+            general.get("duration") or audio.get("duration") or ""
+        )
 
     file_type = (audio.get("format") or general.get("format") or "").lower()
     bit_depth = _parse_bit_depth(audio.get("bit depth") or "")
-    bitrate_kbps = _parse_bitrate_kbps(audio.get("bit rate") or general.get("overall bit rate") or "")
+    bitrate_kbps = _parse_bitrate_kbps(
+        audio.get("bit rate") or general.get("overall bit rate") or ""
+    )
     sampling_rate_hz = _parse_sampling_rate_hz(audio.get("sampling rate") or "")
     year = _parse_year(recorded_date)
 
@@ -372,9 +390,13 @@ async def get_access_token() -> str:
     client_id = (Config.SPOTIFY_CLIENT_ID or "").strip()
     client_secret = (Config.SPOTIFY_CLIENT_SECRET or "").strip()
     if not client_id or not client_secret:
-        raise RuntimeError("Spotify credentials are missing (SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET)")
+        raise RuntimeError(
+            "Spotify credentials are missing (SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET)"
+        )
 
-    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("utf-8")
+    credentials = base64.b64encode(
+        f"{client_id}:{client_secret}".encode("utf-8")
+    ).decode("utf-8")
     url = "https://accounts.spotify.com/api/token"
     headers = {
         "Authorization": f"Basic {credentials}",
@@ -423,10 +445,12 @@ async def spotify_search_track(query: str, limit: int = 1) -> dict | None:
             async with session.get(url, headers=headers) as response:
                 payload = await response.json(content_type=None)
                 if response.status != 200:
-                    error = payload.get("error") if isinstance(payload, dict) else payload
+                    error = (
+                        payload.get("error") if isinstance(payload, dict) else payload
+                    )
                     raise RuntimeError(f"Spotify search error: {error}")
 
-    items = (((payload or {}).get("tracks") or {}).get("items") or [])
+    items = ((payload or {}).get("tracks") or {}).get("items") or []
     track = items[0] if items else None
     async with _SPOTIFY_SEARCH_CACHE_GUARD:
         _SPOTIFY_SEARCH_CACHE[key] = (time.time() + 6 * 3600, track)
@@ -456,17 +480,19 @@ async def spotify_search_tracks(query: str, limit: int = 5) -> list[dict]:
             async with session.get(url, headers=headers) as response:
                 payload = await response.json(content_type=None)
                 if response.status != 200:
-                    error = payload.get("error") if isinstance(payload, dict) else payload
+                    error = (
+                        payload.get("error") if isinstance(payload, dict) else payload
+                    )
                     raise RuntimeError(f"Spotify search error: {error}")
 
-    items = (((payload or {}).get("tracks") or {}).get("items") or [])
+    items = ((payload or {}).get("tracks") or {}).get("items") or []
     async with _SPOTIFY_SEARCH_CACHE_GUARD:
         _SPOTIFY_SEARCH_CACHE[key] = (time.time() + 6 * 3600, items)
     return items
 
 
 def get_track_cover_links(track: dict) -> tuple[str | None, list[str]]:
-    images = (((track or {}).get("album") or {}).get("images") or [])
+    images = ((track or {}).get("album") or {}).get("images") or []
     normalized: list[tuple[str, int]] = []
     for img in images:
         if not isinstance(img, dict):
@@ -514,6 +540,41 @@ async def ensure_media_dir() -> str:
         return fallback
 
 
+async def download_partial_media(
+    message: Message,
+    file_path: str,
+    max_bytes: int = 2_000_000,
+) -> int:
+    media = message.audio
+    if (
+        not media
+        and message.document
+        and (message.document.mime_type or "").startswith("audio/")
+    ):
+        media = message.document
+
+    lock = await _get_download_lock(file_path)
+    async with lock:
+        async with aiopen(file_path, "wb") as f:
+            written = 0
+            stream_client = _stream_media_client(message)
+            async for chunk in stream_client.stream_media(
+                message,
+                limit=(max_bytes // 1_000_000) + 1,
+            ):
+                if not chunk:
+                    continue
+                remaining = max_bytes - written
+                if remaining <= 0:
+                    break
+                out = chunk[:remaining]
+                await f.write(out)
+                written += len(out)
+                if written >= max_bytes:
+                    break
+            return written
+
+
 async def download_message_media(
     message: Message,
     file_path: str,
@@ -522,7 +583,11 @@ async def download_message_media(
     stream_limit: int = 25,
 ):
     media = message.audio
-    if not media and message.document and (message.document.mime_type or "").startswith("audio/"):
+    if (
+        not media
+        and message.document
+        and (message.document.mime_type or "").startswith("audio/")
+    ):
         media = message.document
 
     size = getattr(media, "file_size", None) if media else None
@@ -547,7 +612,9 @@ async def download_message_media(
                 try:
                     await message.download(file_name=file_path)
                     if bool(getattr(Config, "DEBUG", False)):
-                        LOG.debug(f"[download] complete mode=full bytes={int(size)} path={ospath.basename(file_path)!r}")
+                        LOG.debug(
+                            f"[download] complete mode=full bytes={int(size)} path={ospath.basename(file_path)!r}"
+                        )
                     return size
                 except PermissionError:
                     if i == len(delays) - 1:
@@ -556,7 +623,8 @@ async def download_message_media(
 
     async with aiopen(file_path, "wb") as f:
         written = 0
-        async for chunk in bot.stream_media(message, limit=stream_limit):
+        stream_client = _stream_media_client(message)
+        async for chunk in stream_client.stream_media(message, limit=stream_limit):
             if not chunk:
                 break
             remaining = max_prefix_bytes - written
@@ -587,7 +655,11 @@ def _spotify_track_brief(track: dict | None) -> dict:
     for a in artists:
         if isinstance(a, dict) and a.get("name"):
             artist_names.append(a.get("name"))
-    ext = track.get("external_urls") if isinstance(track.get("external_urls"), dict) else {}
+    ext = (
+        track.get("external_urls")
+        if isinstance(track.get("external_urls"), dict)
+        else {}
+    )
     return {
         "id": track.get("id"),
         "name": track.get("name"),
@@ -602,7 +674,9 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").lower()).strip()
 
 
-async def spotify_search_best_match(title: str, album: str, performer: str, limit: int = 5) -> dict | None:
+async def spotify_search_best_match(
+    title: str, album: str, performer: str, limit: int = 5
+) -> dict | None:
 
     tokens = []
     if title:
@@ -629,10 +703,12 @@ async def spotify_search_best_match(title: str, album: str, performer: str, limi
             async with session.get(url, headers=headers) as response:
                 payload = await response.json(content_type=None)
                 if response.status != 200:
-                    error = payload.get("error") if isinstance(payload, dict) else payload
+                    error = (
+                        payload.get("error") if isinstance(payload, dict) else payload
+                    )
                     raise RuntimeError(f"Spotify search error: {error}")
 
-    items = (((payload or {}).get("tracks") or {}).get("items") or [])
+    items = ((payload or {}).get("tracks") or {}).get("items") or []
     if not items:
         return None
 
@@ -648,15 +724,25 @@ async def spotify_search_best_match(title: str, album: str, performer: str, limi
         name_cf = (tr.get("name", "") or "").casefold()
         tr_album_cf = (((tr.get("album") or {}).get("name") or "") or "").casefold()
         artists = tr.get("artists") or []
-        tr_artist_cf = ((artists[0] or {}).get("name", "") or "").casefold() if artists and isinstance(artists[0], dict) else ""
+        tr_artist_cf = (
+            ((artists[0] or {}).get("name", "") or "").casefold()
+            if artists and isinstance(artists[0], dict)
+            else ""
+        )
 
         score = 0
         if title_cf:
             score += 6 if name_cf == title_cf else (3 if title_cf in name_cf else 0)
         if album_cf:
-            score += 4 if tr_album_cf == album_cf else (2 if album_cf in tr_album_cf else 0)
+            score += (
+                4 if tr_album_cf == album_cf else (2 if album_cf in tr_album_cf else 0)
+            )
         if performer_cf:
-            score += 6 if tr_artist_cf == performer_cf else (3 if performer_cf in tr_artist_cf else 0)
+            score += (
+                6
+                if tr_artist_cf == performer_cf
+                else (3 if performer_cf in tr_artist_cf else 0)
+            )
 
         if score > best_score:
             best = tr
@@ -683,12 +769,16 @@ def _strip_query_noise(text: str) -> str:
     return s
 
 
-async def spotify_find_cover_url(title: str, performer: str, album: str = "") -> str | None:
+async def spotify_find_cover_url(
+    title: str, performer: str, album: str = ""
+) -> str | None:
     t = _strip_query_noise(title)
     p = _strip_query_noise(performer)
     a = _strip_query_noise(album)
 
-    _dbg(f"[cover] spotify start title={title!r} artist={performer!r} album={album!r} cleaned=({t!r}, {p!r}, {a!r})")
+    _dbg(
+        f"[cover] spotify start title={title!r} artist={performer!r} album={album!r} cleaned=({t!r}, {p!r}, {a!r})"
+    )
 
     variants: list[str] = []
     base = re.sub(r"\s+", " ", t).strip()
@@ -717,11 +807,11 @@ async def spotify_find_cover_url(title: str, performer: str, album: str = "") ->
             queries.append(f'track:"{t}" artist:"{p}" album:"{a}"')
     for v in variants:
         if p:
-            queries.append(f'{v} {p}')
+            queries.append(f"{v} {p}")
             queries.append(f'track:"{v}" artist:"{p}"')
         queries.append(v)
     if t and p and a:
-        queries.append(f'{t} {p} {a}')
+        queries.append(f"{t} {p} {a}")
     if t:
         queries.append(t)
 
@@ -734,24 +824,36 @@ async def spotify_find_cover_url(title: str, performer: str, album: str = "") ->
         _dbg(f"[cover] spotify query={q!r}")
         items = await spotify_search_tracks(q, limit=5)
         if items:
-            _dbg(f"[cover] spotify results={len(items)} first={_spotify_track_brief(items[0])}")
-            best = await spotify_search_best_match(title=t or title, album=a or album, performer=p or performer, limit=5)
+            _dbg(
+                f"[cover] spotify results={len(items)} first={_spotify_track_brief(items[0])}"
+            )
+            best = await spotify_search_best_match(
+                title=t or title, album=a or album, performer=p or performer, limit=5
+            )
             if best:
                 url = best_cover_url(best)
                 if url:
-                    _dbg(f"[cover] spotify match_found url={url} data={_spotify_track_brief(best)}")
+                    _dbg(
+                        f"[cover] spotify match_found url={url} data={_spotify_track_brief(best)}"
+                    )
                     return url
             for tr in items:
                 url = best_cover_url(tr)
                 if url:
-                    _dbg(f"[cover] spotify match_found url={url} data={_spotify_track_brief(tr)}")
+                    _dbg(
+                        f"[cover] spotify match_found url={url} data={_spotify_track_brief(tr)}"
+                    )
                     return url
 
-    track = await spotify_search_best_match(title=t or title, album=a or album, performer=p or performer)
+    track = await spotify_search_best_match(
+        title=t or title, album=a or album, performer=p or performer
+    )
     if track:
         url = best_cover_url(track)
         if url:
-            _dbg(f"[cover] spotify match_found url={url} data={_spotify_track_brief(track)}")
+            _dbg(
+                f"[cover] spotify match_found url={url} data={_spotify_track_brief(track)}"
+            )
         return url
     return None
 
@@ -773,7 +875,7 @@ def _cov_parse_ndjson(text: str) -> list[dict]:
     items: list[dict] = []
     buf = ""
     braces = 0
-    for ch in (text or ""):
+    for ch in text or "":
         if ch == "{":
             braces += 1
         if ch == "}":
@@ -812,13 +914,17 @@ def _cov_item_brief(item: dict | None) -> dict:
     }
 
 
-async def cov_find_cover(title: str, artist: str, album: str, year: int | None = None, country: str = "in") -> dict | None:
+async def cov_find_cover(
+    title: str, artist: str, album: str, year: int | None = None, country: str = "in"
+) -> dict | None:
     name = (album or "").strip() or (title or "").strip()
     artist = (artist or "").strip()
     if not name or not artist:
         return None
 
-    _dbg(f"[cover] cov start name={name!r} artist={artist!r} year={year!r} country={country!r}")
+    _dbg(
+        f"[cover] cov start name={name!r} artist={artist!r} year={year!r} country={country!r}"
+    )
 
     key = f"cov|{name.lower()}|{artist.lower()}|{(str(year) if year else '')}|{country.lower()}"
     now = time.time()
@@ -843,7 +949,9 @@ async def cov_find_cover(title: str, artist: str, album: str, year: int | None =
             ) as resp:
                 text = await resp.text()
                 if resp.status != 200 or not text:
-                    _dbg(f"[cover] cov no_results status={resp.status} text_len={len(text or '')}")
+                    _dbg(
+                        f"[cover] cov no_results status={resp.status} text_len={len(text or '')}"
+                    )
                     async with _COV_SEARCH_CACHE_GUARD:
                         _COV_SEARCH_CACHE[key] = (time.time() + 1800, None)
                     return None
@@ -888,9 +996,17 @@ async def cov_find_cover(title: str, artist: str, album: str, year: int | None =
 
         match_score = 0
         if title_cf:
-            match_score += 4 if rel_title_cf == title_cf else (2 if title_cf in rel_title_cf else 0)
+            match_score += (
+                4
+                if rel_title_cf == title_cf
+                else (2 if title_cf in rel_title_cf else 0)
+            )
         if artist_cf:
-            match_score += 4 if rel_artist_cf == artist_cf else (2 if artist_cf in rel_artist_cf else 0)
+            match_score += (
+                4
+                if rel_artist_cf == artist_cf
+                else (2 if artist_cf in rel_artist_cf else 0)
+            )
 
         score = conf + is_original + year_score + match_score + source_bonus
         if score > best_score:
@@ -910,7 +1026,9 @@ async def cov_find_cover(title: str, artist: str, album: str, year: int | None =
     return best
 
 
-async def cov_find_cover_url(title: str, artist: str, album: str, year: int | None = None) -> str | None:
+async def cov_find_cover_url(
+    title: str, artist: str, album: str, year: int | None = None
+) -> str | None:
     name = (album or "").strip() or (title or "").strip()
     performer = (artist or "").strip()
     if not name or not performer:
@@ -957,7 +1075,9 @@ async def run_mediainfo(path: str) -> str:
     return await asyncio.to_thread(_run)
 
 
-async def _download_partial_http(url: str, file_path: str, max_bytes: int = 10_000_000) -> int | None:
+async def _download_partial_http(
+    url: str, file_path: str, max_bytes: int = 10_000_000
+) -> int | None:
     async with ClientSession() as session:
         async with session.get(url, headers=HEADERS) as resp:
             resp.raise_for_status()
@@ -988,7 +1108,8 @@ async def _download_telegram(reply: Message, media, file_path: str) -> int | Non
     async with aiopen(file_path, "wb") as f:
         written = 0
         max_prefix_bytes = 10_000_000
-        async for chunk in bot.stream_media(reply, limit=25):
+        stream_client = _stream_media_client(reply)
+        async for chunk in stream_client.stream_media(reply, limit=25):
             if not chunk:
                 break
             remaining = max_prefix_bytes - written
@@ -1000,7 +1121,9 @@ async def _download_telegram(reply: Message, media, file_path: str) -> int | Non
     return size
 
 
-async def generate_mediainfo(message: Message, link: str | None = None, reply: Message | None = None, media=None):
+async def generate_mediainfo(
+    message: Message, link: str | None = None, reply: Message | None = None, media=None
+):
     status = await message.reply_text("Generating MediaInfo...", quote=True)
     file_path = cover_path = None
 
@@ -1062,17 +1185,25 @@ async def mediainfo_handler(_, message: Message):
         return await generate_mediainfo(message, link=message.command[1])
 
     await message.reply_text(
-        "Usage:\n"
-        "/mediainfo <link>\n"
-        "or reply to an audio / media / link",
+        "Usage:\n/mediainfo <link>\nor reply to an audio / media / link",
     )
 
 
 @bot.on_message(filters.command(["search"]))
 async def spotify_search_handler(_, message: Message):
-    query = " ".join(message.command[1:]).strip() if getattr(message, "command", None) else ""
-    if not query and message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
-        query = (message.reply_to_message.text or message.reply_to_message.caption or "").strip()
+    query = (
+        " ".join(message.command[1:]).strip()
+        if getattr(message, "command", None)
+        else ""
+    )
+    if (
+        not query
+        and message.reply_to_message
+        and (message.reply_to_message.text or message.reply_to_message.caption)
+    ):
+        query = (
+            message.reply_to_message.text or message.reply_to_message.caption or ""
+        ).strip()
 
     if not query:
         return await message.reply_text("Usage:\n/search <query>", quote=True)
@@ -1087,9 +1218,15 @@ async def spotify_search_handler(_, message: Message):
         cover_url, cover_urls = get_track_cover_links(track)
 
         track_name = _md_clean(track.get("name", ""))
-        artists = ", ".join(_md_clean(a.get("name", "")) for a in (track.get("artists") or []) if isinstance(a, dict))
+        artists = ", ".join(
+            _md_clean(a.get("name", ""))
+            for a in (track.get("artists") or [])
+            if isinstance(a, dict)
+        )
         album = _md_clean(((track.get("album") or {}).get("name") or ""))
-        spotify_url = (((track.get("external_urls") or {}).get("spotify")) or "").strip()
+        spotify_url = (
+            ((track.get("external_urls") or {}).get("spotify")) or ""
+        ).strip()
 
         caption_lines = [
             f"🎵 `{track_name}`",

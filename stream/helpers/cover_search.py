@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import time
 from urllib.parse import quote
@@ -16,6 +17,22 @@ _SPOTIFY_SEM = asyncio.Semaphore(3)
 def _dbg(msg: str) -> None:
     if bool(getattr(Config, "DEBUG", False)):
         print(msg)
+
+
+async def _json_or_none(resp, *, label: str) -> dict | None:
+    text = await resp.text()
+    if not (text or "").strip():
+        _dbg(f"[cover] {label} empty_response status={resp.status}")
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception as e:
+        _dbg(
+            f"[cover] {label} bad_json status={resp.status} err={e!r} body={text[:300]!r}"
+        )
+        return None
+    return payload if isinstance(payload, dict) else None
+
 
 def _strip_query_noise(text: str) -> str:
     s = (text or "").strip()
@@ -61,9 +78,11 @@ async def _spotify_get_access_token() -> str:
     async with _SPOTIFY_SEM:
         async with ClientSession() as session:
             async with session.post("https://accounts.spotify.com/api/token", data=data) as resp:
-                payload = await resp.json(content_type=None)
+                payload = await _json_or_none(resp, label="spotify_token")
                 if resp.status != 200:
                     raise RuntimeError(f"Spotify token error: {payload}")
+                if payload is None:
+                    raise RuntimeError("Spotify token response was not JSON")
 
     token = (payload.get("access_token") or "").strip()
     expires_in = int(payload.get("expires_in") or 3600)
@@ -134,7 +153,11 @@ async def spotify_album_cover_url(*, artist: str, album: str, year: int | None =
     if year:
         parts.insert(1, f'album:"{al}" year:{int(year)}')
 
-    token = await _spotify_get_access_token()
+    try:
+        token = await _spotify_get_access_token()
+    except Exception as e:
+        _dbg(f"[cover] spotify_album token_failed err={e!r}")
+        return None
     headers = {"Authorization": f"Bearer {token}"}
 
     seen: set[str] = set()
@@ -148,7 +171,9 @@ async def spotify_album_cover_url(*, artist: str, album: str, year: int | None =
         async with _SPOTIFY_SEM:
             async with ClientSession() as session:
                 async with session.get(url, headers=headers) as resp:
-                    payload = await resp.json(content_type=None)
+                    payload = await _json_or_none(resp, label="spotify_album")
+                    if payload is None:
+                        continue
                     if resp.status != 200:
                         _dbg(f"[cover] spotify_album error status={resp.status} body={str(payload)[:300]!r}")
                         continue
@@ -224,7 +249,11 @@ async def spotify_best_track(*, title: str, artist: str, album: str = "", year: 
         parts.append(f'track:"{t}" artist:"{a}"')
     parts.append(f'track:"{t}"')
 
-    token = await _spotify_get_access_token()
+    try:
+        token = await _spotify_get_access_token()
+    except Exception as e:
+        _dbg(f"[cover] spotify_track token_failed err={e!r}")
+        return None
     headers = {"Authorization": f"Bearer {token}"}
 
     seen: set[str] = set()
@@ -238,7 +267,9 @@ async def spotify_best_track(*, title: str, artist: str, album: str = "", year: 
         async with _SPOTIFY_SEM:
             async with ClientSession() as session:
                 async with session.get(url, headers=headers) as resp:
-                    payload = await resp.json(content_type=None)
+                    payload = await _json_or_none(resp, label="spotify_track")
+                    if payload is None:
+                        continue
                     if resp.status != 200:
                         _dbg(f"[cover] spotify_track error status={resp.status} body={str(payload)[:300]!r}")
                         continue
@@ -346,7 +377,9 @@ async def apple_cover_url(*, title: str, artist: str, album: str = "", year: int
         _dbg(f"[cover] apple query={term!r}")
         async with ClientSession() as session:
             async with session.get(url) as resp:
-                payload = await resp.json(content_type=None)
+                payload = await _json_or_none(resp, label="apple")
+                if payload is None:
+                    continue
                 if resp.status != 200:
                     _dbg(f"[cover] apple error status={resp.status} body={str(payload)[:300]!r}")
                     continue
@@ -407,7 +440,9 @@ async def deezer_cover_url(*, title: str, artist: str, album: str = "", year: in
         _dbg(f"[cover] deezer query={q!r}")
         async with ClientSession() as session:
             async with session.get(url) as resp:
-                payload = await resp.json(content_type=None)
+                payload = await _json_or_none(resp, label="deezer")
+                if payload is None:
+                    continue
                 if resp.status != 200:
                     _dbg(f"[cover] deezer error status={resp.status} body={str(payload)[:300]!r}")
                     continue
