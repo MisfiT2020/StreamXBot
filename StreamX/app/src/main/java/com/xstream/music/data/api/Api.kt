@@ -2580,7 +2580,7 @@ fun parseJam(jamObj: JSONObject): Jam {
             allowSeek = settingsObj.optBoolean("allow_seek"),
             allowQueueEdit = settingsObj.optBoolean("allow_queue_edit")
         ),
-        serverTime = jamObj.optDouble("server_time").takeIf { !it.isNaN() && it > 0.0 }
+        serverTime = jamObj.optDouble("serverTime").takeIf { !it.isNaN() && it > 0.0 }
     )
 }
 

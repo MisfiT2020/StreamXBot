@@ -1357,6 +1357,19 @@ fun MusicScreen(
                                             isLoading = isLoadingFriends.value,
                                             onAddFriendClick = { showAddFriendDialog.value = true },
                                             onSettingsClick = { showFriendsSettingsDialog.value = true },
+                                            onRefreshClick = {
+                                                scope.launch {
+                                                    val token = AuthPreferences.getUser(context)?.token
+                                                    if (token != null && apiUrlState.value.isNotBlank()) {
+                                                        isLoadingFriends.value = true
+                                                        friendRequestsState.value = runCatching { fetchFriendRequests(apiUrlState.value, token) }.getOrNull().orEmpty()
+                                                        friendsState.value = runCatching { fetchFriends(apiUrlState.value, token) }.getOrNull().orEmpty()
+                                                        val listeningResult = runCatching { fetchFriendsListening(apiUrlState.value, token) }.getOrNull().orEmpty()
+                                                        friendsListeningState.value = mapListening(listeningResult)
+                                                        isLoadingFriends.value = false
+                                                    }
+                                                }
+                                            },
                                             onFriendClick = { friend, listening ->
                                                 friendListeningFriend.value = friend
                                                 friendListeningSong.value = null
@@ -2067,9 +2080,9 @@ fun MusicScreen(
                                         if (isHost) {
                                             val token = userState.value?.token
                                             if (playerManager.isPlaying.value) {
-                                                jamPause(apiUrlState.value, jamId, context, token)
+                                                JamWebSocketManager.sendAction("pause") || jamPause(apiUrlState.value, jamId, context, token)
                                             } else {
-                                                jamPlay(apiUrlState.value, jamId, context, token)
+                                                JamWebSocketManager.sendAction("play") || jamPlay(apiUrlState.value, jamId, context, token)
                                             }
                                         } else {
                                             
@@ -2783,9 +2796,9 @@ private fun BoxScope.MiniPlayerHost(
 
                     if (isHost) {
                         if (isPlaying) {
-                            jamPause(apiBaseUrl, activeJamId, context, userToken)
+                            JamWebSocketManager.sendAction("pause") || jamPause(apiBaseUrl, activeJamId, context, userToken)
                         } else {
-                            jamPlay(apiBaseUrl, activeJamId, context, userToken)
+                            JamWebSocketManager.sendAction("play") || jamPlay(apiBaseUrl, activeJamId, context, userToken)
                         }
                     } else {
                         playerManager.toggleLocalPlayPause()
@@ -2799,7 +2812,7 @@ private fun BoxScope.MiniPlayerHost(
             onNextClick = {
                 scope.launch {
                     val activeJamId = jamId ?: return@launch
-                    jamNext(apiBaseUrl, activeJamId, context, userToken)
+                    JamWebSocketManager.sendAction("next") || jamNext(apiBaseUrl, activeJamId, context, userToken)
                 }
             }
         )
@@ -3616,7 +3629,6 @@ private fun ApiScreen(
                                 }
                             }
 
-                            // Logs button
                             androidx.compose.material3.Surface(
                                 onClick = { toggleLogs(api.url) },
                                 shape = RoundedCornerShape(12.dp),

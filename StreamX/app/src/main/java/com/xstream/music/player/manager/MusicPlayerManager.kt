@@ -545,9 +545,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         val id = jamId
         if (id != null) {
             viewModelScope.launch(Dispatchers.IO) {
-                val apiBaseUrl = ApiPreferences.getApiUrl(context)
-                val token = AuthPreferences.getUser(context)?.token
-                jamNext(apiBaseUrl, id, context, token)
+                dispatchJamTransportCommand("next")
             }
             return
         }
@@ -615,9 +613,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         val id = jamId
         if (id != null) {
             viewModelScope.launch(Dispatchers.IO) {
-                val apiBaseUrl = ApiPreferences.getApiUrl(context)
-                val token = AuthPreferences.getUser(context)?.token
-                jamPrevious(apiBaseUrl, id, context, token)
+                dispatchJamTransportCommand("previous")
             }
             return
         }
@@ -828,9 +824,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         val id = jamId
         if (id != null) {
             viewModelScope.launch(Dispatchers.IO) {
-                val apiBaseUrl = ApiPreferences.getApiUrl(context)
-                val token = AuthPreferences.getUser(context)?.token
-                jamSeek(apiBaseUrl, id, positionMs / 1000.0, context, token)
+                dispatchJamTransportCommand("seek", mapOf("position_sec" to positionMs / 1000.0))
             }
             return
         }
@@ -891,19 +885,12 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                 val jamQueueIds = queue.drop(1).mapNotNull { it.id }.toMutableList()
                 if (jamQueueIds.remove(trackId)) {
                     jamQueueIds.add(0, trackId)
-                    jamReorderQueue(apiBaseUrl, id, jamQueueIds, context, token)
+                    JamWebSocketManager.sendAction("queue_reorder", mapOf("queue" to jamQueueIds)) || jamReorderQueue(apiBaseUrl, id, jamQueueIds, context, token)
                 } else {
-                    jamAddQueue(apiBaseUrl, id, trackId, position = 0, context = context, token = token)
+                    JamWebSocketManager.sendAction("queue_add", mapOf("track_id" to trackId, "position" to 0)) || jamAddQueue(apiBaseUrl, id, trackId, position = 0, context = context, token = token)
                 }
             } else {
-                jamAddQueue(
-                    apiBaseUrl,
-                    id,
-                    trackId,
-                    position = jamQueueSize,
-                    context = context,
-                    token = token
-                )
+                JamWebSocketManager.sendAction("queue_add", mapOf("track_id" to trackId, "position" to jamQueueSize)) || jamAddQueue(apiBaseUrl, id, trackId, position = jamQueueSize, context = context, token = token)
             }
         }
     }
@@ -921,8 +908,9 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             val jamQueueIds = currentQueue.drop(1).mapNotNull { it.id }.toMutableList()
             if (jamQueueIds.remove(trackId)) {
                 jamQueueIds.add(0, trackId)
-                if (jamReorderQueue(apiBaseUrl, id, jamQueueIds, context, token)) {
-                    jamNext(apiBaseUrl, id, context, token)
+                val reordered = JamWebSocketManager.sendAction("queue_reorder", mapOf("queue" to jamQueueIds)) || jamReorderQueue(apiBaseUrl, id, jamQueueIds, context, token)
+                if (reordered) {
+                    dispatchJamTransportCommand("next", apiBaseUrlOverride = apiBaseUrl, tokenOverride = token, jamIdOverride = id)
                 }
             }
         }
@@ -968,10 +956,10 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             val token = AuthPreferences.getUser(context)?.token
             val handled = if (hasQueuedTracks) {
                 Timber.d("Track ended in Jam, host advancing to next track")
-                jamNext(apiBaseUrl, id, context, token)
+                dispatchJamTransportCommand("next", apiBaseUrlOverride = apiBaseUrl, tokenOverride = token, jamIdOverride = id)
             } else {
                 Timber.d("End of jam queue reached, pausing playback")
-                dispatchJamTransportCommand("pause", apiBaseUrl, token, id)
+                dispatchJamTransportCommand("pause", apiBaseUrlOverride = apiBaseUrl, tokenOverride = token, jamIdOverride = id)
             }
             if (handled) {
                 refreshJamStateFromServer(apiBaseUrl, token, id)
@@ -1124,6 +1112,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
 
     private suspend fun dispatchJamTransportCommand(
         action: String,
+        data: Map<String, Any?> = emptyMap(),
         apiBaseUrlOverride: String? = null,
         tokenOverride: String? = null,
         jamIdOverride: String? = null
@@ -1138,6 +1127,12 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         return when (action) {
             "play" -> JamWebSocketManager.sendAction("play") || jamPlay(apiBaseUrl, id, context, token)
             "pause" -> JamWebSocketManager.sendAction("pause") || jamPause(apiBaseUrl, id, context, token)
+            "next" -> JamWebSocketManager.sendAction("next") || jamNext(apiBaseUrl, id, context, token)
+            "previous" -> JamWebSocketManager.sendAction("previous") || jamPrevious(apiBaseUrl, id, context, token)
+            "seek" -> {
+                val pos = (data["position_sec"] as? Number)?.toDouble() ?: 0.0
+                JamWebSocketManager.sendAction("seek", mapOf("position_sec" to pos)) || jamSeek(apiBaseUrl, id, pos, context, token)
+            }
             else -> false
         }
     }
@@ -1193,9 +1188,10 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
 
                 
                 val isDifferentTrack = trackId != lastSyncedTrackId
-                val playbackParamsChanged = playback.startedAt != lastSyncedStartedAt || 
-                                           playback.positionSec != lastSyncedPositionSec || 
+                val playbackParamsChanged = playback.startedAt != lastSyncedStartedAt ||
+                                           playback.positionSec != lastSyncedPositionSec ||
                                            playback.isPlaying != lastSyncedIsPlaying
+                val serverTimeChanged = jamServerTimeSec != lastSyncedServerTimeSec || syncReceivedAtMs != lastJamSyncReceivedAtMs
 
                 if (isDifferentTrack || !initialSyncDone) {
                     Timber.i("Jam Sync: New track or initial. Track: $trackId, Initial: ${!initialSyncDone}")
@@ -1268,7 +1264,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                     }
                 }
                 
-                if (isDifferentTrack || playbackParamsChanged || !initialSyncDone) {
+                if (isDifferentTrack || playbackParamsChanged || serverTimeChanged || !initialSyncDone) {
                     lastSyncedStartedAt = playback.startedAt
                     lastSyncedPositionSec = playback.positionSec
                     lastSyncedIsPlaying = playback.isPlaying
@@ -1297,7 +1293,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
 
             requestedTrackIds.forEach { trackId ->
                 if (!ensuredQueueIds.contains(trackId)) {
-                    val added = jamAddQueue(
+                    val added = JamWebSocketManager.sendAction("queue_add", mapOf("track_id" to trackId, "position" to ensuredQueueIds.size)) || jamAddQueue(
                         apiBaseUrl,
                         id,
                         trackId,
@@ -1319,7 +1315,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             val promotedSet = promotedTrackIds.toSet()
             val reorderedQueueIds = promotedTrackIds + ensuredQueueIds.filterNot { promotedSet.contains(it) }
             if (reorderedQueueIds != ensuredQueueIds) {
-                jamReorderQueue(apiBaseUrl, id, reorderedQueueIds, context, token)
+                JamWebSocketManager.sendAction("queue_reorder", mapOf("queue" to reorderedQueueIds)) || jamReorderQueue(apiBaseUrl, id, reorderedQueueIds, context, token)
             }
         }
     }

@@ -4,6 +4,7 @@ import type { Playlist, Song } from '../types/index.js'
 import { usePlayerPlayback } from '../context/PlayerContext.js'
 import { api, getAuthUserInfo, setAuthUserInfo } from '../services/api.js'
 import { createJam, jamAddQueue } from '../services/jamApi.js'
+import { sendJamQueueAdd } from '../hooks/useJam.js'
 import './SongList.css'
 
 interface WebSongListProps {
@@ -312,14 +313,16 @@ export const WebSongList = memo(({ songs, title, loading = false, showTitle = tr
         setExternalUpcoming([...previousUpcoming, menuSong])
       }
 
-      jamAddQueue(activeJamId, menuSong._id, null)
-        .then(() => closeMenu())
-        .catch(() => {
-          if (shouldSyncUpcoming && previousUpcoming && !alreadyUpcoming) {
-            setExternalUpcoming(previousUpcoming)
-          }
-          closeMenu()
-        })
+      const sentViaWs = sendJamQueueAdd(menuSong._id, null)
+      if (!sentViaWs) {
+        jamAddQueue(activeJamId, menuSong._id, null)
+          .catch(() => {
+            if (shouldSyncUpcoming && previousUpcoming && !alreadyUpcoming) {
+              setExternalUpcoming(previousUpcoming)
+            }
+          })
+      }
+      closeMenu()
       navigate(`/jam/${activeJamId}`)
       return
     }

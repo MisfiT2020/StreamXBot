@@ -418,7 +418,7 @@ fun JamScreen(
                             isDragging = false
                             scope.launch {
                                 val token = userState?.token
-                                jamSeek(apiUrl, jamId, dragPosition / 1000.0, context, token)
+                                JamWebSocketManager.sendAction("seek", mapOf("position_sec" to dragPosition / 1000.0)) || jamSeek(apiUrl, jamId, dragPosition / 1000.0, context, token)
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -498,7 +498,7 @@ fun JamScreen(
                     onClick = {
                         scope.launch {
                             val token = userState?.token
-                            jamNext(apiUrl, jamId, context, token)
+                            JamWebSocketManager.sendAction("next") || jamNext(apiUrl, jamId, context, token)
                         }
                     },
                     modifier = Modifier

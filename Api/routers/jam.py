@@ -508,79 +508,82 @@ async def jam_settings_update(
     return {"ok": True}
 
 
-@router.post("/{jam_id}/play")
-async def jam_play(jam_id: str, user_id: int = Depends(require_user_id)):
+# ---------------------------------------------------------------------------
+# Core mutation helpers (used by both HTTP and WebSocket handlers)
+# ---------------------------------------------------------------------------
+
+async def _do_play(jam_id: str, user_id: int) -> None:
     col = db_handler.get_collection("jam_sessions").collection
     doc = await col.find_one({"_id": jam_id})
     if not doc:
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="play"):
         raise HTTPException(status_code=403, detail="not allowed")
-    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}    
+    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
     pos, _ = _compute_position(playback)
     now = _now()
     LOG.info(f"[jam_play] jam_id={jam_id} pos={pos:.2f} user_id={user_id}")
-    updates = {
-        "playback.position_sec": float(pos),
-        "playback.started_at": now,
-        "playback.is_playing": True,
-        "updated_at": now,
-    }
-    await col.update_one({"_id": jam_id}, {"$set": updates})
+    await col.update_one(
+        {"_id": jam_id},
+        {"$set": {
+            "playback.position_sec": float(pos),
+            "playback.started_at": now,
+            "playback.is_playing": True,
+            "updated_at": now,
+        }},
+    )
     await _broadcast_fresh_state(jam_id)
-    return {"ok": True}
 
 
-@router.post("/{jam_id}/pause")
-async def jam_pause(jam_id: str, user_id: int = Depends(require_user_id)):
+async def _do_pause(jam_id: str, user_id: int) -> None:
     col = db_handler.get_collection("jam_sessions").collection
     doc = await col.find_one({"_id": jam_id})
     if not doc:
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="pause"):
         raise HTTPException(status_code=403, detail="not allowed")
-    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}    
+    playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
     pos, _ = _compute_position(playback)
     now = _now()
     LOG.info(f"[jam_pause] jam_id={jam_id} pos={pos:.2f} user_id={user_id}")
-    updates = {
-        "playback.position_sec": float(pos),
-        "playback.started_at": now,
-        "playback.is_playing": False,
-        "updated_at": now,
-    }
-    await col.update_one({"_id": jam_id}, {"$set": updates})
+    await col.update_one(
+        {"_id": jam_id},
+        {"$set": {
+            "playback.position_sec": float(pos),
+            "playback.started_at": now,
+            "playback.is_playing": False,
+            "updated_at": now,
+        }},
+    )
     await _broadcast_fresh_state(jam_id)
-    return {"ok": True}
 
 
-@router.post("/{jam_id}/seek")
-async def jam_seek(jam_id: str, payload: JamSeekRequest, user_id: int = Depends(require_user_id)):
+async def _do_seek(jam_id: str, user_id: int, position_sec: float) -> None:
     col = db_handler.get_collection("jam_sessions").collection
     doc = await col.find_one({"_id": jam_id})
     if not doc:
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="seek"):
         raise HTTPException(status_code=403, detail="not allowed")
-
     playback = doc.get("playback") if isinstance(doc.get("playback"), dict) else {}
     _, is_playing = _compute_position(playback)
     now = _now()
-    new_pos = max(0.0, float(payload.position_sec or 0.0))
+    new_pos = max(0.0, float(position_sec or 0.0))
     LOG.info(f"[jam_seek] jam_id={jam_id} new_pos={new_pos:.2f} user_id={user_id}")
-    updates = {
-        "playback.position_sec": new_pos,
-        "playback.started_at": now,
-        "playback.is_playing": bool(is_playing),
-        "updated_at": now,
-    }
-    await col.update_one({"_id": jam_id}, {"$set": updates})
+    await col.update_one(
+        {"_id": jam_id},
+        {"$set": {
+            "playback.position_sec": new_pos,
+            "playback.started_at": now,
+            "playback.is_playing": bool(is_playing),
+            "updated_at": now,
+        }},
+    )
     await _broadcast_fresh_state(jam_id)
-    return {"ok": True}
 
-@router.post("/{jam_id}/queue/add")
-async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int = Depends(require_user_id)):
-    track_id = _sanitize_track_id(payload.track_id)
+
+async def _do_queue_add(jam_id: str, user_id: int, track_id_raw: str, position: int | None = None) -> None:
+    track_id = _sanitize_track_id(track_id_raw)
     if not track_id:
         raise HTTPException(status_code=400, detail="track_id is required")
     col = db_handler.get_collection("jam_sessions").collection
@@ -591,7 +594,7 @@ async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int =
         raise HTTPException(status_code=403, detail="not allowed")
     queue = doc.get("queue") if isinstance(doc.get("queue"), list) else []
     q2 = [str(x) for x in queue if isinstance(x, str) and x.strip()]
-    pos = payload.position
+    pos = position
     try:
         pos = int(pos) if pos is not None else None
     except Exception:
@@ -604,7 +607,6 @@ async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int =
     playback = doc.get("playback") or {}
     curr_pos, _ = _compute_position(playback)
     LOG.info(f"[jam_queue_add] jam_id={jam_id} track_id={track_id} pos={curr_pos:.2f} queue_len={len(q2)}")
-    
     await col.update_one({"_id": jam_id}, {"$set": {"queue": q2, "updated_at": now}})
     doc2 = await col.find_one({"_id": jam_id})
     try:
@@ -614,19 +616,16 @@ async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int =
     except Exception:
         pass
     await _broadcast_fresh_state(jam_id)
-    return {"ok": True}
 
 
-@router.post("/{jam_id}/queue/reorder")
-async def jam_queue_reorder(jam_id: str, payload: JamQueueReorderRequest, user_id: int = Depends(require_user_id)):
+async def _do_queue_reorder(jam_id: str, user_id: int, queue_raw: list[str]) -> None:
     col = db_handler.get_collection("jam_sessions").collection
     doc = await col.find_one({"_id": jam_id})
     if not doc:
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="queue"):
         raise HTTPException(status_code=403, detail="not allowed")
-
-    queue = [_sanitize_track_id(x) for x in (payload.queue or []) if _sanitize_track_id(x)]
+    queue = [_sanitize_track_id(x) for x in (queue_raw or []) if _sanitize_track_id(x)]
     now = _now()
     await col.update_one({"_id": jam_id}, {"$set": {"queue": queue, "updated_at": now}})
     doc2 = await col.find_one({"_id": jam_id})
@@ -637,76 +636,96 @@ async def jam_queue_reorder(jam_id: str, payload: JamQueueReorderRequest, user_i
     except Exception:
         pass
     await _broadcast_fresh_state(jam_id)
-    return {"ok": True}
 
 
-@router.post("/{jam_id}/next")
-async def jam_next(jam_id: str, user_id: int = Depends(require_user_id)):
+async def _do_next(jam_id: str, user_id: int) -> str | None:
     col = db_handler.get_collection("jam_sessions").collection
     doc = await col.find_one({"_id": jam_id})
     if not doc:
         raise HTTPException(status_code=404, detail="jam not found")
     if not _has_permission(doc, int(user_id), action="next"):
         raise HTTPException(status_code=403, detail="not allowed")
-
     queue = doc.get("queue") if isinstance(doc.get("queue"), list) else []
     q2 = [str(x) for x in queue if isinstance(x, str) and x.strip()]
-    
     now = _now()
     if not q2:
         await col.update_one(
             {"_id": jam_id},
-            {
-                "$set": {
-                    "playback.is_playing": False,
-                    "updated_at": now,
-                }
-            },
+            {"$set": {"playback.is_playing": False, "updated_at": now}},
         )
         await _broadcast_fresh_state(jam_id)
-        return {"ok": True, "track_id": None}
-
+        return None
     next_track = _sanitize_track_id(q2.pop(0))
     if not next_track:
         await col.update_one(
             {"_id": jam_id},
-            {
-                "$set": {
-                    "playback.is_playing": False,
-                    "updated_at": now,
-                }
-            },
+            {"$set": {"playback.is_playing": False, "updated_at": now}},
         )
         await _broadcast_fresh_state(jam_id)
-        return {"ok": True, "track_id": None}
-
+        return None
     from Api.services.track_service import get_track_by_id
     track_doc = await get_track_by_id(next_track)
     duration = None
     if track_doc and isinstance(track_doc.get("audio"), dict):
         duration = track_doc["audio"].get("duration_sec")
-
     await col.update_one(
         {"_id": jam_id},
-        {
-            "$set": {
-                "queue": q2,
-                "playback.track_id": next_track,
-                "playback.duration_sec": duration,
-                "playback.position_sec": 0.0,
-                "playback.started_at": now,
-                "playback.is_playing": True,
-                "updated_at": now,
-            }
-        },
+        {"$set": {
+            "queue": q2,
+            "playback.track_id": next_track,
+            "playback.duration_sec": duration,
+            "playback.position_sec": 0.0,
+            "playback.started_at": now,
+            "playback.is_playing": True,
+            "updated_at": now,
+        }},
     )
-    doc2 = await col.find_one({"_id": jam_id})
     try:
         asyncio.create_task(_warm_tracks([next_track] + q2[:2]))
     except Exception:
         pass
     await _broadcast_fresh_state(jam_id)
-    return {"ok": True, "track_id": next_track}
+    return next_track
+
+
+# ---------------------------------------------------------------------------
+# HTTP endpoints (kept for compatibility; frontend uses WebSocket)
+# ---------------------------------------------------------------------------
+
+@router.post("/{jam_id}/play")
+async def jam_play(jam_id: str, user_id: int = Depends(require_user_id)):
+    await _do_play(jam_id, int(user_id))
+    return {"ok": True}
+
+
+@router.post("/{jam_id}/pause")
+async def jam_pause(jam_id: str, user_id: int = Depends(require_user_id)):
+    await _do_pause(jam_id, int(user_id))
+    return {"ok": True}
+
+
+@router.post("/{jam_id}/seek")
+async def jam_seek(jam_id: str, payload: JamSeekRequest, user_id: int = Depends(require_user_id)):
+    await _do_seek(jam_id, int(user_id), payload.position_sec)
+    return {"ok": True}
+
+
+@router.post("/{jam_id}/queue/add")
+async def jam_queue_add(jam_id: str, payload: JamQueueAddRequest, user_id: int = Depends(require_user_id)):
+    await _do_queue_add(jam_id, int(user_id), payload.track_id, payload.position)
+    return {"ok": True}
+
+
+@router.post("/{jam_id}/queue/reorder")
+async def jam_queue_reorder(jam_id: str, payload: JamQueueReorderRequest, user_id: int = Depends(require_user_id)):
+    await _do_queue_reorder(jam_id, int(user_id), payload.queue)
+    return {"ok": True}
+
+
+@router.post("/{jam_id}/next")
+async def jam_next(jam_id: str, user_id: int = Depends(require_user_id)):
+    track_id = await _do_next(jam_id, int(user_id))
+    return {"ok": True, "track_id": track_id}
 
 
 @router.websocket("/{jam_id}/ws")
@@ -747,6 +766,46 @@ async def jam_ws(ws: WebSocket, jam_id: str):
                 doc3 = await _get_session(jam_id2)
                 if doc3:
                     await ws.send_json({"type": "jam_state", "jam": _serialize_session(doc3)})
+            elif mtype == "play":
+                try:
+                    await _do_play(jam_id2, user_id)
+                    await ws.send_json({"type": "ack", "op": "play"})
+                except HTTPException as he:
+                    await ws.send_json({"type": "error", "op": "play", "error": he.detail, "status": he.status_code})
+            elif mtype == "pause":
+                try:
+                    await _do_pause(jam_id2, user_id)
+                    await ws.send_json({"type": "ack", "op": "pause"})
+                except HTTPException as he:
+                    await ws.send_json({"type": "error", "op": "pause", "error": he.detail, "status": he.status_code})
+            elif mtype == "seek":
+                try:
+                    pos = float(msg.get("position_sec") or 0.0)
+                    await _do_seek(jam_id2, user_id, pos)
+                    await ws.send_json({"type": "ack", "op": "seek"})
+                except HTTPException as he:
+                    await ws.send_json({"type": "error", "op": "seek", "error": he.detail, "status": he.status_code})
+            elif mtype == "next":
+                try:
+                    await _do_next(jam_id2, user_id)
+                    await ws.send_json({"type": "ack", "op": "next"})
+                except HTTPException as he:
+                    await ws.send_json({"type": "error", "op": "next", "error": he.detail, "status": he.status_code})
+            elif mtype == "queue_add":
+                try:
+                    tid = msg.get("track_id")
+                    pos = msg.get("position")
+                    await _do_queue_add(jam_id2, user_id, tid, pos)
+                    await ws.send_json({"type": "ack", "op": "queue_add"})
+                except HTTPException as he:
+                    await ws.send_json({"type": "error", "op": "queue_add", "error": he.detail, "status": he.status_code})
+            elif mtype == "queue_reorder":
+                try:
+                    q = msg.get("queue")
+                    await _do_queue_reorder(jam_id2, user_id, q)
+                    await ws.send_json({"type": "ack", "op": "queue_reorder"})
+                except HTTPException as he:
+                    await ws.send_json({"type": "error", "op": "queue_reorder", "error": he.detail, "status": he.status_code})
             else:
                 await ws.send_json({"type": "error", "error": "unsupported_message"})
     except WebSocketDisconnect:

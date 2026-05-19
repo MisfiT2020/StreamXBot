@@ -167,7 +167,14 @@ object JamWebSocketManager {
             val json = JSONObject().apply {
                 put("type", type)
                 data.forEach { (key, value) ->
-                    put(key, value)
+                    when (value) {
+                        is List<*> -> {
+                            val arr = org.json.JSONArray()
+                            value.forEach { arr.put(it) }
+                            put(key, arr)
+                        }
+                        else -> put(key, value)
+                    }
                 }
             }
             val message = json.toString()

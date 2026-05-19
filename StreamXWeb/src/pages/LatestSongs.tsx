@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { usePlayerLibrary, usePlayerPlayback } from '../context/PlayerContext.js'
 import { createJam, jamAddQueue } from '../services/jamApi.js'
+import { sendJamQueueAdd } from '../hooks/useJam.js'
 import { api, CACHE_TTL_MS, getAuthUserInfo, getCacheEnabled, getWebSongListEnabled, setAuthUserInfo } from '../services/api.js'
 import { platform } from '../platform.js'
 import type { Playlist, Song } from '../types/index.js'
@@ -395,14 +396,16 @@ export const LatestSongsPage = () => {
         setExternalUpcoming([...previousUpcoming, menuSong])
       }
 
-      jamAddQueue(activeJamId, menuSong._id, null)
-        .then(() => closeMenu())
-        .catch(() => {
-          if (shouldSyncUpcoming && previousUpcoming && !alreadyUpcoming) {
-            setExternalUpcoming(previousUpcoming)
-          }
-          closeMenu()
-        })
+      const sentViaWs = sendJamQueueAdd(menuSong._id, null)
+      if (!sentViaWs) {
+        jamAddQueue(activeJamId, menuSong._id, null)
+          .catch(() => {
+            if (shouldSyncUpcoming && previousUpcoming && !alreadyUpcoming) {
+              setExternalUpcoming(previousUpcoming)
+            }
+          })
+      }
+      closeMenu()
       navigate(`/jam/${activeJamId}`)
       return
     }

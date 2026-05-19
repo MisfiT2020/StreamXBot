@@ -4,6 +4,25 @@ import { API_BASE_URL } from '../services/api.js'
 const WS_RECONNECT_BASE = 1000
 const JAM_ACTIVE_KEY = 'streamw:jam:activeId'
 
+let _globalSendQueueAdd: ((trackId: string, position?: number | null) => void) | null = null
+let _globalSendQueueReorder: ((queue: string[]) => void) | null = null
+
+export function sendJamQueueAdd(trackId: string, position?: number | null): boolean {
+  if (_globalSendQueueAdd) {
+    _globalSendQueueAdd(trackId, position)
+    return true
+  }
+  return false
+}
+
+export function sendJamQueueReorder(queue: string[]): boolean {
+  if (_globalSendQueueReorder) {
+    _globalSendQueueReorder(queue)
+    return true
+  }
+  return false
+}
+
 interface JamPlayback {
   track_id: string
   position_sec: number
@@ -207,9 +226,41 @@ export function useJam({ jamId, authToken, onJamState }: UseJamOptions) {
     }
   }, [])
 
+  const _send = useCallback((payload: Record<string, unknown>) => {
+    try {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify(payload))
+      }
+    } catch (e) {
+      void e
+    }
+  }, [])
+
+  const sendPlay = useCallback(() => _send({ type: 'play' }), [_send])
+  const sendPause = useCallback(() => _send({ type: 'pause' }), [_send])
+  const sendNext = useCallback(() => _send({ type: 'next' }), [_send])
+  const sendSeek = useCallback((positionSec: number) => _send({ type: 'seek', position_sec: positionSec }), [_send])
+  const sendQueueAdd = useCallback((trackId: string, position?: number | null) => _send({ type: 'queue_add', track_id: trackId, position }), [_send])
+  const sendQueueReorder = useCallback((queue: string[]) => _send({ type: 'queue_reorder', queue }), [_send])
+
+  useEffect(() => {
+    _globalSendQueueAdd = sendQueueAdd
+    _globalSendQueueReorder = sendQueueReorder
+    return () => {
+      _globalSendQueueAdd = null
+      _globalSendQueueReorder = null
+    }
+  }, [sendQueueAdd, sendQueueReorder])
+
   return {
     connected,
     jam,
     sendPing,
+    sendPlay,
+    sendPause,
+    sendNext,
+    sendSeek,
+    sendQueueAdd,
+    sendQueueReorder,
   }
 }

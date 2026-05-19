@@ -243,7 +243,7 @@ class MusicPlaybackService : MediaSessionService() {
             JamWebSocketManager.connect(apiBaseUrl, jamId, token, jam)
             if (jam.hostUserId == user?.id) {
                 if (jam.queue.isNotEmpty()) {
-                    if (jamNext(apiBaseUrl, jamId, this@MusicPlaybackService, token)) {
+                    if (JamWebSocketManager.sendAction("next") || jamNext(apiBaseUrl, jamId, this@MusicPlaybackService, token)) {
                         refreshOrApplyJamState(apiBaseUrl, jamId, token)
                     }
                 } else {

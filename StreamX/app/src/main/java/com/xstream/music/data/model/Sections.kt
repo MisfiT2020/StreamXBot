@@ -1046,6 +1046,7 @@ fun FriendsSection(
     onAddFriendClick: () -> Unit = {},
     onAcceptRequestClick: (Long) -> Unit = {},
     onSettingsClick: () -> Unit = {},
+    onRefreshClick: () -> Unit = {},
     onFriendClick: (Friend, FriendListening?) -> Unit = { _, _ -> },
     onFriendLongClick: (Friend) -> Unit = {}
 ) {
@@ -1070,6 +1071,18 @@ fun FriendsSection(
                     Icon(
                         imageVector = androidx.compose.material.icons.Icons.Default.Settings,
                         contentDescription = "Friends Settings",
+                        tint = Color.Gray,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                IconButton(
+                    onClick = onRefreshClick,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Default.Refresh,
+                        contentDescription = "Refresh Friends",
                         tint = Color.Gray,
                         modifier = Modifier.size(18.dp)
                     )

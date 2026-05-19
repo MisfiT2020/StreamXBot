@@ -283,7 +283,7 @@ data class FriendSettingsResponse(
 
 data class FriendPresence(
     val online: Boolean,
-    val last_seen: Double,
+    val last_seen: Double? = null,
     val device: String? = null
 )
 

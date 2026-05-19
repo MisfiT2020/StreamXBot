@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useJam, type Jam } from '../hooks/useJam.js'
 import { usePlayerPlayback } from '../context/PlayerContext.js'
 import { API_BASE_URL, getAuthToken, getAuthUserInfo } from '../services/api.js'
-import { jamPlay, jamPause, jamNext, jamEnd, joinJam, jamQueueReorder, jamLeave } from '../services/jamApi.js'
+import { jamEnd, joinJam, jamLeave } from '../services/jamApi.js'
 import { api } from '../services/api.js'
 import type { Song, TrackDetailsResponse } from '../types/index.js'
 import { platform } from '../platform.js'
@@ -379,7 +379,7 @@ export const JamPage = () => {
     }
   }, [audioRef, computeJamPosition, userId])
 
-  const { jam} = useJam({
+  const { jam, sendPlay, sendPause, sendNext, sendSeek, sendQueueReorder } = useJam({
     jamId: jamId || null,
     authToken,
     onJamState: syncAudioToJam,
@@ -467,25 +467,16 @@ export const JamPage = () => {
           void unlockAudioOnce().finally(() => {
             audio.play().catch(() => {})
           })
-          return jamPlay(jamForUi._id).catch(() => {
-            try {
-              audio.pause()
-            } catch {
-              void 0
-            }
-          })
+          sendPlay()
+          return
         }
-
         try {
           audio.pause()
         } catch {
           void 0
         }
-        return jamPause(jamForUi._id).catch(() => {
-          void unlockAudioOnce().finally(() => {
-            audio.play().catch(() => {})
-          })
-        })
+        sendPause()
+        return
       }
 
       if (audio.paused) {
@@ -507,10 +498,10 @@ export const JamPage = () => {
 
   const advanceToNextTrack = useCallback(async (state: Jam) => {
     try {
-      const nextTrack = await jamNext(state._id)
+      sendNext()
       const audio = audioRef.current
       if (!audio) return
-      const nextTrackId = nextTrack?.track_id ?? state.playback.track_id
+      const nextTrackId = state.queue[0] ?? state.playback.track_id
       window.setTimeout(() => {
         syncAudioToJam({
           ...state,
@@ -533,7 +524,7 @@ export const JamPage = () => {
     if (hostStartRequestedRef.current) return
     hostStartRequestedRef.current = true
     if (jamForUi.playback.is_playing) return
-    jamPlay(jamForUi._id).catch(() => { void 0 })
+    sendPlay()
   }, [jamForUi, isHost])
 
   // Trigger initial audio load when jam first becomes available
@@ -566,7 +557,7 @@ export const JamPage = () => {
       } catch {
         void 0
       }
-      jamPause(state._id).catch(() => { void 0 })
+      sendPause()
     }
 
     audio.addEventListener('ended', onEnded)
@@ -739,7 +730,7 @@ export const JamPage = () => {
     setQueueTracks(next)
 
     try {
-      await jamQueueReorder(jamForUi._id, next.map((t) => t._id))
+      sendQueueReorder(next.map((t) => t._id))
     } catch (err) {
       setQueueTracks(previous)
       console.error('Failed to reorder queue:', err)
@@ -779,9 +770,9 @@ export const JamPage = () => {
 
     try {
       if (currentIsPlaying) {
-        await jamPause(jamForUi._id)
+        sendPause()
       } else {
-        await jamPlay(jamForUi._id)
+        sendPlay()
       }
     } catch (err) {
       setHostUiIsPlaying(null)
@@ -834,18 +825,16 @@ export const JamPage = () => {
   const handleNext = useCallback(async () => {
     if (!jamForUi || !isHost) return
     try {
-      const nextTrack = await jamNext(jamForUi._id)
-      // optimistic: play next locally (backend will broadcast jam_state)
+      sendNext()
       const audio = audioRef.current
       if (audio) {
         try {
-          // small delay to allow server to update and stream to be ready
           setTimeout(() => {
             syncAudioToJam({
               ...jamForUi,
               playback: {
                 ...jamForUi.playback,
-                track_id: nextTrack?.track_id ?? jamForUi.playback.track_id,
+                track_id: jamForUi.queue[0] ?? jamForUi.playback.track_id,
                 position_sec: 0,
                 started_at: Date.now() / 1000,
                 is_playing: true,
@@ -868,7 +857,6 @@ export const JamPage = () => {
       return
     }
     lastSeekRef.current = Date.now() / 1000
-    // optimistic local seek when host (reduces perceived latency)
     const audio = audioRef.current
     if (audio) {
       try {
@@ -877,19 +865,7 @@ export const JamPage = () => {
         console.warn('Local seek failed (optimistic):', e)
       }
     }
-    try {
-      await fetch(`${API_BASE_URL}/jam/${jamForUi._id}/seek`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ position_sec: positionSec }),
-      })
-      console.log('Seek successful to:', positionSec)
-    } catch (err) {
-      console.error('Failed to seek:', err)
-    }
+    sendSeek(positionSec)
   }, [audioRef, jamForUi, isHost, authToken])
 
   const clamp = useCallback((value: number, min: number, max: number) => {

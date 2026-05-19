@@ -130,13 +130,11 @@ class _StreamHub:
                         LOG.warning(f"Hub failed to fetch source message: {e}")
 
                 try:
-                    # Calculate chunk offset to resume from
                     start_chunk = self._total_written // _CHUNK_SIZE
                     stream_kwargs: dict[str, int] = {}
                     if start_chunk > 0:
                         stream_kwargs["offset"] = int(start_chunk)
 
-                    # Track how much we've already skipped if we are resuming
                     remaining_skip = max(
                         0, self._total_written - (start_chunk * _CHUNK_SIZE)
                     )

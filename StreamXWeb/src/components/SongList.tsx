@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import type { Playlist, Song } from '../types/index.js'
 import { usePlayerPlayback } from '../context/PlayerContext.js'
 import { createJam, jamAddQueue } from '../services/jamApi.js'
+import { sendJamQueueAdd } from '../hooks/useJam.js'
 import { api, getAuthUserInfo, setAuthUserInfo } from '../services/api.js'
 import latestArrowUrl from '../assets/latestArrow.svg'
 import './SongList.css'
@@ -371,14 +372,16 @@ export const SongList = memo(
         setExternalUpcoming([...previousUpcoming, menuSong])
       }
 
-      jamAddQueue(activeJamId, menuSong._id, null)
-        .then(() => closeMenu())
-        .catch(() => {
-          if (shouldSyncUpcoming && previousUpcoming && !alreadyUpcoming) {
-            setExternalUpcoming(previousUpcoming)
-          }
-          closeMenu()
-        })
+      const sentViaWs = sendJamQueueAdd(menuSong._id, null)
+      if (!sentViaWs) {
+        jamAddQueue(activeJamId, menuSong._id, null)
+          .catch(() => {
+            if (shouldSyncUpcoming && previousUpcoming && !alreadyUpcoming) {
+              setExternalUpcoming(previousUpcoming)
+            }
+          })
+      }
+      closeMenu()
       navigate(`/jam/${activeJamId}`)
       return
     }
