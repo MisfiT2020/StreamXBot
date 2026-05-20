@@ -31,9 +31,65 @@ async def broadcast_presence_to_friends(user_id: int, online: bool):
     for f_id in friend_ids:
         await manager.broadcast_to_user(f_id, broadcast_msg)
 
+async def send_initial_state(user_id: int, websocket: WebSocket):
+    try:
+        # 1. Get friends
+        friends_col = db_handler.get_collection("friends").collection
+        friend_doc = await friends_col.find_one({"_id": user_id})
+        if not friend_doc:
+            return
+        
+        friend_ids = friend_doc.get("friend_ids", [])
+        if not friend_ids:
+            return
+
+        # 2. Get friends' info (to check settings)
+        users_col = db_handler.get_collection("users").collection
+        friends_cursor = users_col.find({"_id": {"$in": friend_ids}}, {"settings": 1})
+        
+        allowed_friends = []
+        async for f in friends_cursor:
+            settings = f.get("settings", {})
+            share = settings.get("share_listening", "friends")
+            if share in ["friends", "everyone"]:
+                allowed_friends.append(f["_id"])
+
+        # 3. Get presence
+        presence_col = db_handler.get_collection("presence").collection
+        p_cursor = presence_col.find({"user_id": {"$in": friend_ids}})
+        presence_data = {}
+        async for p in p_cursor:
+            presence_data[str(p["user_id"])] = {
+                "online": p.get("online", False),
+                "last_seen": p.get("last_seen"),
+                "device": p.get("device")
+            }
+
+        # 4. Get listening status
+        listening_col = db_handler.get_collection("listeningStatus").collection
+        l_cursor = listening_col.find({"user_id": {"$in": allowed_friends}})
+        listening_data = {}
+        async for l in l_cursor:
+            listening_data[str(l["user_id"])] = {
+                "track_id": l.get("track_id"),
+                "is_playing": l.get("is_playing"),
+                "position_sec": l.get("position_sec"),
+                "jam_id": l.get("jam_id"),
+                "updated_at": l.get("updated_at")
+            }
+
+        initial_state = {
+            "type": "initial_state",
+            "presence": presence_data,
+            "listening": listening_data
+        }
+        
+        await websocket.send_json(initial_state)
+    except Exception as e:
+        LOGGER(__name__).error(f"[WS] Failed to send initial state to {user_id}: {e}")
+
 class ConnectionManager:
     def __init__(self):
-        # user_id -> list of active websockets
         self.active_connections: Dict[int, List[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, user_id: int):
@@ -53,7 +109,8 @@ class ConnectionManager:
             upsert=True
         )
 
-        # Notify friends if this is their first active session
+        await send_initial_state(user_id, websocket)
+
         if is_first_session:
             await broadcast_presence_to_friends(user_id, True)
 
@@ -79,6 +136,17 @@ class ConnectionManager:
                 self.disconnect(c, user_id)
 
 manager = ConnectionManager()
+
+async def broadcast_to_friends(user_id: int, message: dict):
+    friends_col = db_handler.get_collection("friends").collection
+    friend_doc = await friends_col.find_one({"_id": user_id})
+    if not friend_doc:
+        return
+    friend_ids = friend_doc.get("friend_ids", [])
+    if not friend_ids:
+        return
+    for f_id in friend_ids:
+        await manager.broadcast_to_user(f_id, message)
 
 async def broadcast_listening_to_friends(user_id: int, update_data: dict):
     users_col = db_handler.get_collection("users").collection

@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from bson import ObjectId
 from Api.schemas.friends import FriendRequestPayload, AcceptRequestPayload, InviteJamPayload, SettingsPayload, FcmTokenPayload
 from Api.utils.auth import require_user_id
+from Api.routers.presence import manager, broadcast_listening_to_friends
 from stream.database.MongoDb import db_handler
 
 router = APIRouter(prefix="/friends", tags=["friends"])
@@ -31,6 +32,30 @@ async def send_friend_request(payload: FriendRequestPayload, user_id: int = Depe
         friends_col = db_handler.get_collection("friends").collection
         await friends_col.update_one({"_id": user_id}, {"$addToSet": {"friend_ids": payload.to}, "$set": {"updated_at": time.time()}}, upsert=True)
         await friends_col.update_one({"_id": payload.to}, {"$addToSet": {"friend_ids": user_id}, "$set": {"updated_at": time.time()}}, upsert=True)
+        
+        # Notify both about mutual friendship
+        u1 = await users_col.find_one({"_id": user_id}, {"first_name": 1, "profile_url": 1, "photo_url": 1, "username": 1})
+        u2 = await users_col.find_one({"_id": payload.to}, {"first_name": 1, "profile_url": 1, "photo_url": 1, "username": 1})
+        
+        await manager.broadcast_to_user(payload.to, {
+            "type": "friend_accepted", 
+            "user": {
+                "user_id": user_id,
+                "first_name": u1.get("first_name"),
+                "username": u1.get("username"),
+                "profile_url": u1.get("profile_url") or u1.get("photo_url")
+            }
+        })
+        await manager.broadcast_to_user(user_id, {
+            "type": "friend_accepted", 
+            "user": {
+                "user_id": payload.to,
+                "first_name": u2.get("first_name"),
+                "username": u2.get("username"),
+                "profile_url": u2.get("profile_url") or u2.get("photo_url")
+            }
+        })
+        
         return {"ok": True, "message": "Mutual friend request detected and auto-accepted"}
 
     existing = await freq_col.find_one({"from": user_id, "to": payload.to, "status": "pending"})
@@ -48,6 +73,19 @@ async def send_friend_request(payload: FriendRequestPayload, user_id: int = Depe
         "status": "pending",
         "created_at": time.time()
     })
+    
+    # Notify target about new friend request
+    u = await users_col.find_one({"_id": user_id}, {"first_name": 1, "profile_url": 1, "photo_url": 1, "username": 1})
+    await manager.broadcast_to_user(payload.to, {
+        "type": "new_friend_request",
+        "user": {
+            "user_id": user_id,
+            "first_name": u.get("first_name"),
+            "username": u.get("username"),
+            "profile_url": u.get("profile_url") or u.get("photo_url")
+        }
+    })
+    
     return {"ok": True}
 
 @router.get("/requests")
@@ -104,6 +142,30 @@ async def accept_friend_request(payload: AcceptRequestPayload, user_id: int = De
     await friends_col.update_one({"_id": user_id}, {"$addToSet": {"friend_ids": payload.userId}, "$set": {"updated_at": time.time()}}, upsert=True)
     await friends_col.update_one({"_id": payload.userId}, {"$addToSet": {"friend_ids": user_id}, "$set": {"updated_at": time.time()}}, upsert=True)
     
+    # Notify both about mutual friendship
+    users_col = db_handler.get_collection("users").collection
+    u1 = await users_col.find_one({"_id": user_id}, {"first_name": 1, "profile_url": 1, "photo_url": 1, "username": 1})
+    u2 = await users_col.find_one({"_id": payload.userId}, {"first_name": 1, "profile_url": 1, "photo_url": 1, "username": 1})
+
+    await manager.broadcast_to_user(payload.userId, {
+        "type": "friend_accepted", 
+        "user": {
+            "user_id": user_id,
+            "first_name": u1.get("first_name"),
+            "username": u1.get("username"),
+            "profile_url": u1.get("profile_url") or u1.get("photo_url")
+        }
+    })
+    await manager.broadcast_to_user(user_id, {
+        "type": "friend_accepted", 
+        "user": {
+            "user_id": payload.userId,
+            "first_name": u2.get("first_name"),
+            "username": u2.get("username"),
+            "profile_url": u2.get("profile_url") or u2.get("photo_url")
+        }
+    })
+
     return {"ok": True}
 
 @router.delete("/{friendId}")
@@ -111,6 +173,11 @@ async def remove_friend(friendId: int, user_id: int = Depends(require_user_id)):
     friends_col = db_handler.get_collection("friends").collection
     await friends_col.update_one({"_id": user_id}, {"$pull": {"friend_ids": friendId}})
     await friends_col.update_one({"_id": friendId}, {"$pull": {"friend_ids": user_id}})
+    
+    # Notify both about removal
+    await manager.broadcast_to_user(friendId, {"type": "friend_removed", "user_id": user_id})
+    await manager.broadcast_to_user(user_id, {"type": "friend_removed", "user_id": friendId})
+
     return {"ok": True}
 
 @router.get("")
@@ -162,8 +229,6 @@ class ListeningUpdatePayload(BaseModel):
     is_playing: bool = True
     position_sec: float = 0
     jam_id: Optional[str] = None
-
-from Api.routers.presence import manager, broadcast_listening_to_friends
 
 @router.post("/listening")
 async def update_listening_status(payload: ListeningUpdatePayload, user_id: int = Depends(require_user_id)):
@@ -217,8 +282,6 @@ async def get_friends_listening(user_id: int = Depends(require_user_id)):
         status_list.append(l)
         
     return {"ok": True, "listening": status_list}
-
-from Api.routers.presence import manager
 
 @router.post("/invite-jam")
 async def invite_to_jam(payload: InviteJamPayload, user_id: int = Depends(require_user_id)):

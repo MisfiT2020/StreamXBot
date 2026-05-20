@@ -813,26 +813,56 @@ fun MusicScreen(
                 friendsListeningState.value = listeningMap
                 isLoadingFriends.value = false
 
-
-                launch {
-                    while (isActive) {
-                        kotlinx.coroutines.delay(60_000L)
-                        val f = runCatching { fetchFriends(savedUrl, token) }.getOrNull()
-                        if (f != null) {
-                            friendsState.value = f
-                        }
-                        val l = runCatching { fetchFriendsListening(savedUrl, token) }.getOrNull()
-                        if (l != null) {
-                            friendsListeningState.value = mapListening(l)
-                        }
-                    }
-                }
-
                 
                 launch {
                     PresenceWebSocketManager.messages.collect { json ->
                         val type = json.optString("type")
-                        if ((type == "listening_update" || type == "friend_listening_update") && json.has("user_id")) {
+                        
+                        if (type == "initial_state") {
+                            
+                            val presenceJson = json.optJSONObject("presence")
+                            if (presenceJson != null) {
+                                val currentFriends = friendsState.value.toMutableList()
+                                var changed = false
+                                for (key in presenceJson.keys()) {
+                                    val uid = key.toLongOrNull() ?: continue
+                                    val pObj = presenceJson.optJSONObject(key) ?: continue
+                                    val idx = currentFriends.indexOfFirst { it._id == uid }
+                                    if (idx != -1) {
+                                        val friend = currentFriends[idx]
+                                        val newP = FriendPresence(
+                                            online = pObj.optBoolean("online", false),
+                                            last_seen = pObj.optDouble("last_seen"),
+                                            device = pObj.optString("device")
+                                        )
+                                        currentFriends[idx] = friend.copy(presence = newP)
+                                        changed = true
+                                    }
+                                }
+                                if (changed) friendsState.value = currentFriends
+                            }
+
+                            
+                            val listeningJson = json.optJSONObject("listening")
+                            if (listeningJson != null) {
+                                val currentMap = friendsListeningState.value.toMutableMap()
+                                for (key in listeningJson.keys()) {
+                                    val uid = key.toLongOrNull() ?: continue
+                                    val lObj = listeningJson.optJSONObject(key) ?: continue
+                                    currentMap[uid] = FriendListening(
+                                        _id = "",
+                                        user_id = uid,
+                                        track_id = lObj.optString("track_id").takeIf { it.isNotEmpty() },
+                                        started_at = if (lObj.has("started_at")) lObj.optDouble("started_at") else null,
+                                        is_playing = lObj.optBoolean("is_playing", false),
+                                        position_sec = lObj.optDouble("position_sec", 0.0),
+                                        jam_id = lObj.optString("jam_id").takeIf { it.isNotEmpty() },
+                                        updated_at = if (lObj.has("updated_at")) lObj.optDouble("updated_at") else null
+                                    )
+                                }
+                                friendsListeningState.value = currentMap
+                            }
+                        } else if ((type == "listening_update" || type == "friend_listening_update") && json.has("user_id")) {
                             val userId = json.optLong("user_id")
                             val currentMap = friendsListeningState.value.toMutableMap()
                             val existing = currentMap[userId]
@@ -898,6 +928,42 @@ fun MusicScreen(
                                 currentFriends[index] = friend.copy(presence = newPresence)
                                 friendsState.value = currentFriends
                             }
+                        } else if (type == "new_friend_request") {
+                            val userObj = json.optJSONObject("user")
+                            if (userObj != null) {
+                                val newReq = FriendRequest(
+                                    user_id = userObj.optLong("user_id"),
+                                    first_name = userObj.optString("first_name"),
+                                    username = userObj.optString("username"),
+                                    profile_url = userObj.optString("profile_url"),
+                                    request_id = "", 
+                                    created_at = System.currentTimeMillis() / 1000.0
+                                )
+                                friendRequestsState.value = (friendRequestsState.value + newReq).distinctBy { it.user_id }
+                            }
+                        } else if (type == "friend_accepted") {
+                            val userObj = json.optJSONObject("user")
+                            if (userObj != null) {
+                                val userId = userObj.optLong("user_id")
+                                
+                                friendRequestsState.value = friendRequestsState.value.filter { it.user_id != userId }
+                                
+                                val newFriend = Friend(
+                                    _id = userId,
+                                    first_name = userObj.optString("first_name"),
+                                    photo_url = userObj.optString("profile_url"),
+                                    profile_url = userObj.optString("profile_url"),
+                                    settings = null,
+                                    presence = FriendPresence(online = true, last_seen = System.currentTimeMillis() / 1000.0)
+                                )
+                                friendsState.value = (friendsState.value + newFriend).distinctBy { it._id }
+                            }
+                        } else if (type == "friend_removed") {
+                            val userId = json.optLong("user_id")
+                            friendsState.value = friendsState.value.filter { it._id != userId }
+                            val currentMap = friendsListeningState.value.toMutableMap()
+                            currentMap.remove(userId)
+                            friendsListeningState.value = currentMap
                         } else if (type == "friends_update") {
                             val newFriendsResult = runCatching { fetchFriends(savedUrl, token) }.getOrNull()
                             if (newFriendsResult != null) friendsState.value = newFriendsResult
@@ -906,7 +972,8 @@ fun MusicScreen(
                             if (newListeningResult != null) {
                                 friendsListeningState.value = mapListening(newListeningResult)
                             }
-                        }                    }
+                        }
+                    }
                 }
             } else {
                 PresenceWebSocketManager.disconnect()
