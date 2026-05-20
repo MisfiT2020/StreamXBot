@@ -51,10 +51,12 @@ const deriveAuthUserInfoFromToken = (token: string): { first_name?: string; user
   if (!payload) return null
 
   const rawUserId =
-    payload.user_id ?? payload.userId ?? payload.uid ?? payload.id ?? payload.sub ?? payload.user ?? payload.account_id
+    payload.uid ?? payload.user_id ?? payload.userId ?? payload.id ?? payload.sub ?? payload.user ?? payload.account_id
 
   let user_id: number | undefined
-  if (typeof rawUserId === 'number' && Number.isFinite(rawUserId)) {
+  if (rawUserId === "__api__") {
+    user_id = 0
+  } else if (typeof rawUserId === 'number' && Number.isFinite(rawUserId)) {
     user_id = rawUserId
   } else if (typeof rawUserId === 'string') {
     const parsed = Number.parseInt(rawUserId, 10)
@@ -66,6 +68,14 @@ const deriveAuthUserInfoFromToken = (token: string): { first_name?: string; user
 
   if (user_id == null && !first_name) return null
   return { user_id, first_name }
+}
+
+export const isApiToken = (token: string | null): boolean => {
+  if (!token) return false
+  const parts = token.split('.')
+  if (parts.length < 2) return false
+  const payload = decodeBase64UrlJson(parts[1] || '')
+  return payload?.uid === "__api__"
 }
 
 export const getAuthToken = (): string | null => {
@@ -86,6 +96,14 @@ export const setAuthToken = (token: string | null): void => {
       try {
         const rawExisting = window.localStorage.getItem(AUTH_USER_INFO_STORAGE_KEY)
         const existing = rawExisting ? (JSON.parse(rawExisting) as AuthUserInfo) : null
+        
+        if (isApiToken(token)) {
+          // API tokens are guest browsing tokens only.
+          // Clear user information to ensure the UI treats this as a guest session.
+          setAuthUserInfo(null)
+          return
+        }
+
         const derived = deriveAuthUserInfoFromToken(token)
         const derivedUserId = derived?.user_id
         const derivedFirstName = derived?.first_name

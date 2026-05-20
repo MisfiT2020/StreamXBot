@@ -225,7 +225,7 @@ object DownloadHelper {
                     }
                     
                     val normalizedApiUrl = apiUrl.removeSuffix("/")
-                    val token = AuthPreferences.getUser(context)?.token
+                    val token = AuthPreferences.getEffectiveToken(context)
                     val isYouTubeTrack = song.type == "youtube" || trackId.startsWith("yt_")
 
                     val lyrics: String? = if (!isYouTubeTrack) {

@@ -63,7 +63,7 @@ fun LatestSongsScreen(
     isPlayerVisible: Boolean = false
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val userToken = remember { AuthPreferences.getUser(context)?.token }
+    val userToken = remember { AuthPreferences.getEffectiveToken(context) }
     val viewModel: LatestSongsViewModel = viewModel { LatestSongsViewModel(apiUrl, userToken) }
     val songs by viewModel.songs.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -249,7 +249,7 @@ private fun LatestSongItem(
                 onFavouriteClick = {
                     if (song.id != null) {
                         coroutineScope.launch {
-                            val userToken = AuthPreferences.getUser(context)?.token
+                            val userToken = AuthPreferences.getEffectiveToken(context)
                             val apiUrl = ApiPreferences.getApiUrl(context)
                             toggleFavorite(apiUrl, song, context, userToken)
                         }

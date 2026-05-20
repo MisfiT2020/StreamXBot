@@ -423,7 +423,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
             
             viewModelScope.launch {
                 val apiBaseUrl = ApiPreferences.getApiUrl(context)
-                val token = AuthPreferences.getUser(context)?.token
+                val token = AuthPreferences.getEffectiveToken(context)
                 
                 player.stop()
                 player.clearMediaItems()
@@ -522,7 +522,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                     updateCurrentSong()
                 }
                 val apiBaseUrl = ApiPreferences.getApiUrl(context)
-                val token = AuthPreferences.getUser(context)?.token
+                val token = AuthPreferences.getEffectiveToken(context)
                 viewModelScope.launch {
                     val mediaItem = buildMediaItem(
                         song = song,
@@ -586,7 +586,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         }
 
         val apiBaseUrl = ApiPreferences.getApiUrl(context)
-        val token = AuthPreferences.getUser(context)?.token
+        val token = AuthPreferences.getEffectiveToken(context)
         viewModelScope.launch {
             val mediaItems = songsToQueue.mapIndexed { index, song ->
                 buildMediaItem(
@@ -649,7 +649,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
                  val jamQueueIds = if (fullQueueIds.isNotEmpty()) fullQueueIds.drop(1) else emptyList()
                  viewModelScope.launch {
                      val apiBaseUrl = ApiPreferences.getApiUrl(context)
-                     val token = AuthPreferences.getUser(context)?.token
+                     val token = AuthPreferences.getEffectiveToken(context)
                      jamReorderQueue(apiBaseUrl, id, jamQueueIds, context, token)
                  }
              }
@@ -880,7 +880,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         val jamQueueSize = queue.drop(1).count { !it.id.isNullOrBlank() }
         viewModelScope.launch {
             val apiBaseUrl = ApiPreferences.getApiUrl(context)
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             if (playNext) {
                 val jamQueueIds = queue.drop(1).mapNotNull { it.id }.toMutableList()
                 if (jamQueueIds.remove(trackId)) {
@@ -904,7 +904,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         
         viewModelScope.launch {
             val apiBaseUrl = ApiPreferences.getApiUrl(context)
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             val jamQueueIds = currentQueue.drop(1).mapNotNull { it.id }.toMutableList()
             if (jamQueueIds.remove(trackId)) {
                 jamQueueIds.add(0, trackId)
@@ -953,7 +953,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             ensureJamRealtimeConnection()
             val apiBaseUrl = ApiPreferences.getApiUrl(context)
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             val handled = if (hasQueuedTracks) {
                 Timber.d("Track ended in Jam, host advancing to next track")
                 dispatchJamTransportCommand("next", apiBaseUrlOverride = apiBaseUrl, tokenOverride = token, jamIdOverride = id)
@@ -971,7 +971,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
 
     fun ensureJamRealtimeConnection() {
         val id = jamId ?: return
-        val token = AuthPreferences.getUser(context)?.token ?: return
+        val token = AuthPreferences.getEffectiveToken(context) ?: return
         val apiBaseUrl = ApiPreferences.getApiUrl(context)
         if (apiBaseUrl.isBlank() || JamWebSocketManager.isConnected()) return
         val initialState = JamWebSocketManager.jamState.value?.takeIf { it.id == id }
@@ -980,7 +980,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
 
     suspend fun refreshJamStateFromServer(
         apiBaseUrl: String = ApiPreferences.getApiUrl(context),
-        token: String? = AuthPreferences.getUser(context)?.token,
+        token: String? = AuthPreferences.getEffectiveToken(context),
         jamIdOverride: String? = null
     ): Jam? {
         val id = jamIdOverride ?: jamId ?: return null
@@ -1119,7 +1119,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
     ): Boolean {
         val id = jamIdOverride ?: jamId ?: return false
         val apiBaseUrl = apiBaseUrlOverride ?: ApiPreferences.getApiUrl(context)
-        val token = tokenOverride ?: AuthPreferences.getUser(context)?.token
+        val token = tokenOverride ?: AuthPreferences.getEffectiveToken(context)
         if (apiBaseUrl.isBlank()) return false
 
         ensureJamRealtimeConnection()
@@ -1285,7 +1285,7 @@ class MusicPlayerManager(private val context: Context) : ViewModel() {
 
         viewModelScope.launch {
             val apiBaseUrl = ApiPreferences.getApiUrl(context)
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             val ensuredQueueIds = queue
                 .drop(1)
                 .mapNotNull { it.id?.takeIf(String::isNotBlank) }

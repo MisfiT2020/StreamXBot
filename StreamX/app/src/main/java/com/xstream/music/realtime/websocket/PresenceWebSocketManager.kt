@@ -52,6 +52,10 @@ object PresenceWebSocketManager {
     fun isConnected(): Boolean = webSocket != null
 
     fun connect(apiBaseUrl: String, token: String) {
+        if (token.isBlank()) {
+            Timber.d("Blocking Presence WebSocket connection for unauthenticated guest.")
+            return
+        }
         lastApiBaseUrl = apiBaseUrl
         lastToken = token
         disconnect(isReconnecting = true)

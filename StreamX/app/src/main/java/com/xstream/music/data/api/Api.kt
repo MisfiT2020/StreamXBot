@@ -511,18 +511,25 @@ suspend fun getYouTubeWatchQueue(song: Song, context: Context): Pair<List<Song>,
 
 
 
-suspend fun searchSoundcloud(apiUrl: String, query: String, limit: Int = 20, page: Int = 1): List<SearchItem> = withContext(Dispatchers.IO) {
+suspend fun searchSoundcloud(apiUrl: String, query: String, limit: Int = 20, page: Int = 1, context: Context? = null, token: String? = null): List<SearchItem> = withContext(Dispatchers.IO) {
     try {
         val normalizedUrl = normalizeApiInput(apiUrl)
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val urlStr = "$normalizedUrl/soundcloud/search?q=$encodedQuery&page=$page&limit=$limit"
-        
+
         Timber.tag("SoundcloudApi").d("Searching: $urlStr")
-        
+
         val connection = (URL(urlStr).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("User-Agent", "Mozilla/5.0")
             setRequestProperty("Accept", "application/json")
+
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
+            effectiveToken?.let {
+                setRequestProperty("Authorization", "Bearer $it")
+                setRequestProperty("X-Auth-Token", it)
+            }
+
             connectTimeout = 10_000
             readTimeout = 10_000
         }
@@ -627,8 +634,8 @@ suspend fun getSoundcloudStreamUrl(apiUrl: String, trackId: String): String? = w
     null
 }
 
-fun searchSongs(apiUrl: String, query: String, page: Int = 1, limit: Int = 20, channelId: String = ""): SearchResponse {
-    
+fun searchSongs(apiUrl: String, query: String, page: Int = 1, limit: Int = 20, channelId: String = "", context: Context? = null, token: String? = null): SearchResponse {
+
     val normalizedUrl = normalizeApiInput(apiUrl)
     if (normalizedUrl.isBlank()) return SearchResponse(page, limit, 0, emptyList(), null)
 
@@ -636,11 +643,18 @@ fun searchSongs(apiUrl: String, query: String, page: Int = 1, limit: Int = 20, c
     val encodedChannelId = channelId.trim().takeIf { it.isNotEmpty() }?.let { java.net.URLEncoder.encode(it, "UTF-8") }
     val channelParam = encodedChannelId?.let { "&channel_id=$it" } ?: ""
     val url = "$normalizedUrl/search?query=$encodedQuery&page=$page&limit=$limit$channelParam"
-    
+
     try {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
+
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
+            effectiveToken?.let {
+                setRequestProperty("Authorization", "Bearer $it")
+                setRequestProperty("X-Auth-Token", it)
+            }
+
             connectTimeout = 10_000
             readTimeout = 10_000
         }
@@ -746,7 +760,7 @@ suspend fun rebuildAlbums(apiBaseUrl: String, context: Context? = null, token: S
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -979,7 +993,7 @@ suspend fun fetchBrowseSongs(apiInput: String, page: Int = 1, context: Context? 
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1052,7 +1066,7 @@ suspend fun fetchSong(apiBaseUrl: String, trackId: String, context: Context? = n
                 requestMethod = "GET"
                 setRequestProperty("accept", "application/json")
                 
-                val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+                val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
                 effectiveToken?.let {
                     setRequestProperty("Authorization", "Bearer $it")
                     setRequestProperty("X-Auth-Token", it)
@@ -1150,7 +1164,7 @@ suspend fun fetchTrackLyrics(
                 requestMethod = "GET"
                 setRequestProperty("accept", "application/json")
                 
-                val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+                val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
                 effectiveToken?.let {
                     setRequestProperty("Authorization", "Bearer $it")
                     setRequestProperty("X-Auth-Token", it)
@@ -1361,7 +1375,7 @@ suspend fun fetchPlaylists(apiBaseUrl: String, context: Context? = null, token: 
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1428,7 +1442,7 @@ suspend fun fetchFavoriteIds(apiBaseUrl: String, context: Context? = null, token
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1553,7 +1567,7 @@ suspend fun syncYouTubeTrack(
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
 
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1599,7 +1613,7 @@ suspend fun addFavorite(apiBaseUrl: String, trackId: String, context: Context? =
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1648,7 +1662,7 @@ suspend fun removeFavorite(apiBaseUrl: String, trackId: String, context: Context
             requestMethod = "DELETE"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1687,7 +1701,7 @@ suspend fun fetchFavoriteSongsAndUpdatedTime(apiBaseUrl: String, page: Int = 1, 
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1869,7 +1883,7 @@ suspend fun fetchPlaylistMetadata(apiBaseUrl: String, playlistId: String, contex
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -1942,7 +1956,7 @@ suspend fun fetchPlaylistSongs(apiBaseUrl: String, playlistEndpoint: String, pag
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2032,7 +2046,7 @@ suspend fun createPlaylist(apiBaseUrl: String, name: String, context: Context? =
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2089,7 +2103,7 @@ suspend fun deletePlaylist(apiBaseUrl: String, playlistId: String, context: Cont
             requestMethod = "DELETE"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2126,7 +2140,7 @@ suspend fun renamePlaylist(apiBaseUrl: String, playlistId: String, newName: Stri
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2411,7 +2425,7 @@ suspend fun addTracksToPlaylist(apiBaseUrl: String, playlistId: String, trackIds
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2461,7 +2475,7 @@ suspend fun addTrackToPlaylist(apiBaseUrl: String, playlistId: String, trackId: 
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2510,7 +2524,7 @@ suspend fun removeTrackFromPlaylist(apiBaseUrl: String, playlistId: String, trac
             requestMethod = "DELETE"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2596,7 +2610,7 @@ suspend fun createJam(apiBaseUrl: String, request: CreateJamRequest, context: Co
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2653,7 +2667,7 @@ suspend fun joinJam(apiBaseUrl: String, jamId: String, context: Context? = null,
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Length", "0")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2700,7 +2714,7 @@ suspend fun fetchJam(apiBaseUrl: String, jamId: String, context: Context? = null
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2762,7 +2776,7 @@ suspend fun jamSeek(apiBaseUrl: String, jamId: String, positionSec: Double, cont
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2798,7 +2812,7 @@ suspend fun inviteFriendToJam(apiBaseUrl: String, jamId: String, targetUserId: L
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2872,7 +2886,7 @@ suspend fun jamAddQueue(
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2904,7 +2918,7 @@ suspend fun jamReorderQueue(apiBaseUrl: String, jamId: String, queue: List<Strin
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2937,7 +2951,7 @@ suspend fun fetchUserProfile(apiBaseUrl: String, context: Context? = null, token
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -2981,7 +2995,7 @@ suspend fun fetchCurrentUserRole(apiBaseUrl: String, context: Context? = null, t
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3013,7 +3027,7 @@ suspend fun fetchServerLogs(apiBaseUrl: String, context: Context? = null, token:
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3092,7 +3106,7 @@ suspend fun fetchUserPlaylists(apiBaseUrl: String, context: Context? = null, tok
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
             
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3158,7 +3172,7 @@ private suspend fun sendJamCommand(apiBaseUrl: String, jamId: String, command: S
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3331,7 +3345,7 @@ suspend fun fetchAlbum(apiBaseUrl: String, albumId: String, context: Context? = 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3403,7 +3417,7 @@ suspend fun saveAlbum(apiBaseUrl: String, albumId: String, context: Context? = n
             requestMethod = "POST"
             setRequestProperty("accept", "application/json")
             setRequestProperty("Content-Type", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3436,7 +3450,7 @@ suspend fun removeAlbum(apiBaseUrl: String, albumId: String, context: Context? =
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "DELETE"
             setRequestProperty("accept", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)
@@ -3463,7 +3477,7 @@ suspend fun fetchSavedAlbums(apiBaseUrl: String, page: Int = 1, limit: Int = 50,
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("accept", "application/json")
-            val effectiveToken = token ?: context?.let { AuthPreferences.getUser(it)?.token }
+            val effectiveToken = token ?: context?.let { AuthPreferences.getEffectiveToken(it) }
             effectiveToken?.let {
                 setRequestProperty("Authorization", "Bearer $it")
                 setRequestProperty("X-Auth-Token", it)

@@ -1,4 +1,5 @@
 import time
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -93,16 +94,18 @@ async def list_favourites(
 
 @router.get("/favourites/ids", response_model=FavouriteIdsResponse)
 async def list_favourite_ids(
-    user_id: int = Depends(require_user_id),
+    user_id: Optional[int] = Depends(require_user_id),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=200, ge=1, le=1000),
 ):
+    if user_id is None:
+        return FavouriteIdsResponse(page=page, per_page=limit, total=0, ids=[], exists=False)
     page = int(page)
     per_page = int(limit)
     skip = (page - 1) * per_page
 
     col = db_handler.get_collection("user_favourites").collection
-    query = {"user_id": int(user_id)}
+    query = {"user_id": user_id}
     total = await col.count_documents(query)
 
     cursor = (

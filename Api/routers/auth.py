@@ -289,40 +289,9 @@ async def setup_owner_password(
         upsert=True,
     )
 
-    users_col = db_handler.get_collection("users").collection
-    user = await users_col.find_one({"_id": owner_uid}, {"first_name": 1, "profile_url": 1, "photo_url": 1}) or {}
-    tg = await _get_telegram_profile(owner_uid)
-    updates: dict = {"updated_at": now}
-    if isinstance(user, dict) and not user:
-        updates["created_at"] = now
-    if tg.get("first_name"):
-        updates["first_name"] = tg["first_name"]
-    if tg.get("photo_url"):
-        updates["photo_url"] = tg["photo_url"]
-        updates["profile_url"] = tg["photo_url"]
-    if updates:
-        await users_col.update_one(
-            {"_id": owner_uid},
-            {"$set": updates, "$setOnInsert": {"_id": owner_uid}},
-            upsert=True,
-        )
-        user = {**user, **updates}
-
-    first_name = user.get("first_name") if isinstance(user.get("first_name"), str) else None
-    profile_url = user.get("profile_url") if isinstance(user.get("profile_url"), str) else None
-    if not profile_url:
-        profile_url = user.get("photo_url") if isinstance(user.get("photo_url"), str) else None
-
-    token = create_auth_token(user_id=owner_uid, first_name=first_name, profile_url=profile_url)
+    token = create_auth_token(user_id="__api__")
     _set_auth_cookie(response=response, token=token)
-    return {
-        "ok": True,
-        "user_id": owner_uid,
-        "token": token,
-        "first_name": first_name,
-        "profile_url": profile_url,
-        "photo_url": profile_url,
-    }
+    return {"ok": True, "token": token}
 
 
 @router.post("/password")
@@ -350,27 +319,10 @@ async def owner_password_login(
     if not _verify_password(pwd, stored):
         raise HTTPException(status_code=401, detail="invalid credentials")
 
-    users_col = db_handler.get_collection("users").collection
-    user = await users_col.find_one(
-        {"_id": owner_uid},
-        {"first_name": 1, "profile_url": 1, "photo_url": 1},
-    ) or {}
-    first_name = user.get("first_name") if isinstance(user.get("first_name"), str) else None
-    profile_url = user.get("profile_url") if isinstance(user.get("profile_url"), str) else None
-    if not profile_url:
-        profile_url = user.get("photo_url") if isinstance(user.get("photo_url"), str) else None
-
-    token = create_auth_token(user_id=owner_uid, first_name=first_name, profile_url=profile_url)
+    token = create_auth_token(user_id="__api__")
     if set_cookie:
         _set_auth_cookie(response=response, token=token)
-    return {
-        "ok": True,
-        "user_id": owner_uid,
-        "token": token,
-        "first_name": first_name,
-        "profile_url": profile_url,
-        "photo_url": profile_url,
-    }
+    return {"ok": True, "token": token}
 
 
 @router.post("/password/change")
@@ -409,9 +361,20 @@ async def set_auth_cookie(
     if not token:
         raise HTTPException(status_code=400, detail="token is required")
     verified = verify_auth_token(token)
-    uid = int(verified.get("uid") or 0)
-    if uid <= 0:
+    uid_raw = verified.get("uid")
+    if isinstance(uid_raw, str) and uid_raw == "__api__":
+        uid = 0
+    else:
+        try:
+            uid = int(uid_raw or 0)
+        except (ValueError, TypeError):
+            uid = 0
+    
+    if uid < 0:
         raise HTTPException(status_code=401, detail="invalid auth token")
+    if uid == 0 and uid_raw != "__api__":
+        raise HTTPException(status_code=401, detail="invalid auth token")
+        
     _set_auth_cookie(response=response, token=token)
     return {"ok": True, "user_id": uid}
 

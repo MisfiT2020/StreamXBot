@@ -338,7 +338,7 @@ fun AudioSettingsScreen(
                         showRebuildDialog = true
                         coroutineScope.launch {
                             val apiUrl = ApiPreferences.getApiUrl(context)
-                            val token = AuthPreferences.getUser(context)?.token
+                            val token = AuthPreferences.getEffectiveToken(context)
                             val result = rebuildAlbums(apiUrl, context, token)
                             isRebuilding = false
                             if (result != null) {

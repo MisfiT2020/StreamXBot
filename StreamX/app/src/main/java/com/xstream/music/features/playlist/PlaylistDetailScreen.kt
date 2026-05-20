@@ -187,7 +187,7 @@ fun PlaylistDetailScreen(
     val isYouTubeAlbum = playlist.kind == "youtube_album"
 
     LaunchedEffect(playlist.id) {
-        val token = AuthPreferences.getUser(context)?.token
+        val token = AuthPreferences.getEffectiveToken(context)
         var sharedPlaylistSongs: List<Song>? = null
         
         if (!isYouTubePlaylist && !isYouTubeAlbum && (currentPlaylistState.value.title == "Loading Playlist..." || currentPlaylistState.value.endpoint.isNullOrBlank())) {
@@ -321,7 +321,7 @@ fun PlaylistDetailScreen(
         snapshotFlow { shouldLoadMore }.collect { shouldLoad ->
             if (shouldLoad) {
                 isMoreLoadingState.value = true
-                val token = AuthPreferences.getUser(context)?.token
+                val token = AuthPreferences.getEffectiveToken(context)
                 val nextPage = currentPageState.value + 1
                 
                 val newSongs = if (isFavorites) {
@@ -784,7 +784,7 @@ fun PlaylistDetailScreen(
                         onRemoveFromPlaylistClick = if (playlist.kind == "user_playlist" && song.id != null) {
                             {
                                 scope.launch {
-                                    val token = AuthPreferences.getUser(context)?.token
+                                    val token = AuthPreferences.getEffectiveToken(context)
                                     val success = removeTrackFromPlaylist(apiUrl, playlist.id, song.id, context, token)
                                     if (success) {
                                         
@@ -1061,7 +1061,7 @@ fun PlaylistDetailScreen(
                                                 apiBaseUrl = apiUrl,
                                                 songs = songsState.value,
                                                 context = context,
-                                                token = AuthPreferences.getUser(context)?.token
+                                                token = AuthPreferences.getEffectiveToken(context)
                                             )
                                             val message = when {
                                                 addedCount > 0 -> "Added $addedCount tracks to favourites"
@@ -1300,7 +1300,7 @@ fun AppleMusicSongRow(
                 onFavouriteClick = {
                     if (song.id != null) {
                         coroutineScope.launch {
-                            val userToken = AuthPreferences.getUser(context)?.token
+                            val userToken = AuthPreferences.getEffectiveToken(context)
                             val apiUrl = ApiPreferences.getApiUrl(context)
                             toggleFavorite(apiUrl, song, context, userToken)
                         }

@@ -95,7 +95,7 @@ fun SearchResultsScreen(
                         isLoading = false
                     }
                 } else if (source == "soundcloud") {
-                    val scResults = searchSoundcloud(apiUrl, query, limit = 20, page = 1)
+                    val scResults = searchSoundcloud(apiUrl, query, limit = 20, page = 1, context = context)
                     withContext(Dispatchers.Main) {
                         val mappedSongs = scResults.map { item -> item.toSongModel() }
                         songs = mappedSongs
@@ -105,7 +105,7 @@ fun SearchResultsScreen(
                     }
                 } else {
                     // StreamX search - only fetch songs, no artists
-                    val response = searchSongs(apiUrl, query, page = 1, limit = 20, channelId = channelId)
+                    val response = searchSongs(apiUrl, query, page = 1, limit = 20, channelId = channelId, context = context)
                     val newSongs = response.items.map { item -> item.toSongModel() }
                     
                     withContext(Dispatchers.Main) {
@@ -161,7 +161,7 @@ fun SearchResultsScreen(
                             }
                         }
                     } else if (source == "soundcloud") {
-                        val scResults = searchSoundcloud(apiUrl, query, limit = 20, page = nextPage)
+                        val scResults = searchSoundcloud(apiUrl, query, limit = 20, page = nextPage, context = context)
                         withContext(Dispatchers.Main) {
                             if (scResults.isEmpty()) {
                                 hasMore = false
@@ -175,7 +175,7 @@ fun SearchResultsScreen(
                             isLoadingMore = false
                         }
                     } else {
-                        val response = searchSongs(apiUrl, query, page = nextPage, limit = 20, channelId = channelId)
+                        val response = searchSongs(apiUrl, query, page = nextPage, limit = 20, channelId = channelId, context = context)
                         val newSongs = response.items.map { item -> item.toSongModel() }
                         
                         withContext(Dispatchers.Main) {

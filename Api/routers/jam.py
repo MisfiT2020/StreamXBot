@@ -1,8 +1,7 @@
 import asyncio
 import time
 import uuid
-from typing import Any
-
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Header, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
@@ -346,10 +345,12 @@ class JamSettingsUpdateRequest(BaseModel):
 @router.post("/create", response_model=JamJoinResponse)
 async def jam_create(
     payload: JamCreateRequest,
-    user_id: int = Depends(require_user_id),
+    user_id: Optional[int] = Depends(require_user_id),
     authorization: str | None = Header(default=None),
     x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
 ):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="login required to create jam")
     auth_payload = _auth_payload_from_headers(authorization, x_auth_token)
     first_name, profile_url = await _resolve_member_meta(user_id=int(user_id), auth_payload=auth_payload)
     track_id = _sanitize_track_id(payload.track_id)

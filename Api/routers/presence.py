@@ -118,10 +118,19 @@ async def broadcast_listening_to_friends(user_id: int, update_data: dict):
 async def websocket_endpoint(websocket: WebSocket, token: str):
     try:
         payload = verify_auth_token(token)
-        user_id = int(payload["uid"])
+        uid_raw = payload.get("uid")
+        if isinstance(uid_raw, str) and uid_raw == "__api__":
+            user_id = 0
+        else:
+            user_id = int(uid_raw)
     except Exception as e:
         LOGGER(__name__).warning(f"[WS] Auth failed for token: {e}")
         await websocket.close(code=1008)
+        return
+
+    # Guests (0) are not permitted to use WebSockets for presence or state management.
+    if user_id == 0:
+        await websocket.close(code=1008, reason="Guest browsing tokens cannot use WebSockets")
         return
 
     await manager.connect(websocket, user_id)

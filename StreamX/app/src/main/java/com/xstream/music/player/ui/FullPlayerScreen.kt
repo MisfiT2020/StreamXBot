@@ -267,7 +267,7 @@ fun FullPlayerScreen(
         isTrackDownloaded(song.id, downloadedIds)
     }
     val userState = remember { mutableStateOf(AuthPreferences.getUser(context)) }
-    val userToken = userState.value?.token
+    val userToken = AuthPreferences.getEffectiveToken(context)
     val scope = rememberCoroutineScope()
     val disableExoPlayerAnimation = remember { DataCache.isExoPlayerAnimationDisabled(context) }
     var showAddToPlaylist by remember { mutableStateOf(false) }

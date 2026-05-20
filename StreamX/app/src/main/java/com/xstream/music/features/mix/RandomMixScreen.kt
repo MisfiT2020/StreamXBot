@@ -244,7 +244,7 @@ fun RandomMixSongRow(
                 onFavouriteClick = {
                     if (song.id != null) {
                         coroutineScope.launch {
-                            val userToken = AuthPreferences.getUser(context)?.token
+                            val userToken = AuthPreferences.getEffectiveToken(context)
                             val apiUrl = ApiPreferences.getApiUrl(context)
                             toggleFavorite(apiUrl, song, context, userToken)
                         }

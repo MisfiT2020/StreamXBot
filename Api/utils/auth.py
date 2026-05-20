@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import time
+from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -31,15 +32,18 @@ def _get_secret_key_bytes() -> bytes:
 
 def create_auth_token(
     *,
-    user_id: int,
+    user_id: int | str,
     ttl_sec: int = 365 * 24 * 60 * 60,
     first_name: str | None = None,
     photo_url: str | None = None,
     profile_url: str | None = None,
 ) -> str:
-    uid = int(user_id)
-    if uid <= 0:
-        raise HTTPException(status_code=400, detail="user_id must be a positive int")
+    if isinstance(user_id, str) and user_id == "__api__":
+        uid = user_id
+    else:
+        uid = int(user_id)
+        if uid <= 0:
+            raise HTTPException(status_code=400, detail="user_id must be a positive int")
 
     now = int(time.time())
     payload: dict[str, object] = {"uid": uid, "iat": now, "exp": now + int(ttl_sec)}
@@ -88,13 +92,20 @@ def verify_auth_token(token: str) -> dict:
     uid = payload.get("uid")
     exp = payload.get("exp")
     try:
-        uid = int(uid)
         exp = int(exp) if exp is not None else 0
     except Exception:
         raise HTTPException(status_code=401, detail="invalid auth token")
 
-    if uid <= 0:
-        raise HTTPException(status_code=401, detail="invalid auth token")
+    if isinstance(uid, str) and uid == "__api__":
+        pass
+    else:
+        try:
+            uid = int(uid)
+        except Exception:
+            raise HTTPException(status_code=401, detail="invalid auth token")
+        if uid <= 0:
+            raise HTTPException(status_code=401, detail="invalid auth token")
+        payload["uid"] = uid
 
     if exp and int(time.time()) > exp:
         raise HTTPException(status_code=401, detail="auth token expired")
@@ -102,11 +113,13 @@ def verify_auth_token(token: str) -> dict:
     return payload
 
 
+from typing import Optional
+
 def require_user_id(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
-) -> int:
+) -> Optional[int]:
     token = ""
     if credentials is not None and (credentials.credentials or "").strip():
         token = (credentials.credentials or "").strip()
@@ -116,11 +129,23 @@ def require_user_id(
         token = (request.cookies.get("auth_token") or "").strip()
         if not token:
             token = (request.cookies.get("token") or "").strip()
+    
+    if not token:
+        # If no token is provided, treat as guest (None)
+        return None
+        
     payload = verify_auth_token(token)
-    return int(payload["uid"])
+    uid = payload.get("uid")
+    if isinstance(uid, str):
+        if uid == "__api__":
+            return None
+        raise HTTPException(status_code=401, detail="user login required")
+    return int(uid)
 
 
-def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
+def require_admin_user_id(user_id: Optional[int] = Depends(require_user_id)) -> int:
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="admin only")
     uid = int(user_id)
     owners = getattr(Config, "OWNER_ID", None) or []
     sudos = getattr(Config, "SUDO_USERS", None) or []

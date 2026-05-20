@@ -813,7 +813,7 @@ fun YouTubeArtistContent(
                                     onClick = {
                                         val index = sectionSongs.indexOfFirst { it.id == song.id }
                                         if (index != -1) {
-                                            val token = AuthPreferences.getUser(context)?.token
+                                            val token = AuthPreferences.getEffectiveToken(context)
                                             playerManager.setQueueFromLatest(
                                                 sectionSongs,
                                                 index,

@@ -48,7 +48,7 @@ fun LibraryScreen(
     
     LaunchedEffect(Unit) {
         val apiUrl = ApiPreferences.getApiUrl(context)
-        val token = AuthPreferences.getUser(context)?.token
+        val token = AuthPreferences.getEffectiveToken(context)
         
         if (apiUrl.isNotBlank() && token != null) {
             val result = withContext(Dispatchers.IO) {
@@ -70,7 +70,7 @@ fun LibraryScreen(
         isRefreshing = true
         scope.launch {
             val apiUrl = ApiPreferences.getApiUrl(context)
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             
             if (apiUrl.isNotBlank() && token != null) {
                 val result = withContext(Dispatchers.IO) {

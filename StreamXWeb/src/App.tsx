@@ -17,7 +17,7 @@ import { JamPage } from './pages/JamPage.js'
 import { ProfilePage } from './pages/ProfilePage.js'
 import { SearchPage } from './pages/Search.js'
 import { platform } from './platform.js'
-import { API_BASE_URL, ensureAuthCookieFromToken, getAuthToken, getRedSelectorEnabled, getThemeMode, getFloatingNavTopPad, setAuthToken, api } from './services/api.js'
+import { API_BASE_URL, ensureAuthCookieFromToken, getAuthToken, getRedSelectorEnabled, getThemeMode, getFloatingNavTopPad, setAuthToken, api, isApiToken } from './services/api.js'
 import './App.css'
 
 const RouteMotion = ({ children }: { children: ReactNode }) => {
@@ -149,6 +149,11 @@ function App() {
             : null
         if (!cancelled) setTgUserFirstName(unsafeFirstName)
         console.warn('Telegram WebApp detected, but initData is empty. Open via Telegram Mini App.')
+        return
+      }
+
+      if (isApiToken(getAuthToken())) {
+        console.log('Skipping webapp/verify because an API token is already active.')
         return
       }
 

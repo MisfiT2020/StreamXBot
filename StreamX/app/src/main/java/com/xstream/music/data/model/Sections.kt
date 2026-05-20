@@ -588,7 +588,7 @@ fun SongRowCard(
                 onFavouriteClick = {
                     if (song.id != null) {
                         coroutineScope.launch {
-                            val userToken = AuthPreferences.getUser(context)?.token
+                            val userToken = AuthPreferences.getEffectiveToken(context)
                             val apiUrl = ApiPreferences.getApiUrl(context)
                             toggleFavorite(apiUrl, song, context, userToken)
                         }
@@ -616,7 +616,7 @@ fun SongRowCard(
                     {
                         coroutineScope.launch {
                             val apiUrl = ApiPreferences.getApiUrl(context)
-                            val userToken = AuthPreferences.getUser(context)?.token
+                            val userToken = AuthPreferences.getEffectiveToken(context)
                             val videoId = song.id?.removePrefix("yt_")
                             if (videoId.isNullOrBlank()) {
                                 android.widget.Toast.makeText(context, "Unable to sync this track", android.widget.Toast.LENGTH_SHORT).show()

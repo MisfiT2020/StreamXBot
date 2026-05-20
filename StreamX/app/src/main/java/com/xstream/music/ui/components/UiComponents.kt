@@ -692,7 +692,7 @@ fun SongContextMenu(
                     onClick = {
                         coroutineScope.launch {
                             val apiUrl = ApiPreferences.getApiUrl(context)
-                            val userToken = AuthPreferences.getUser(context)?.token
+                            val userToken = AuthPreferences.getEffectiveToken(context)
                             val videoId = song?.id?.removePrefix("yt_")
                             if (videoId.isNullOrBlank()) {
                                 android.widget.Toast.makeText(context, "Unable to sync this track", android.widget.Toast.LENGTH_SHORT).show()
@@ -2520,7 +2520,7 @@ fun AddToPlaylistBottomSheet(
                             }.getOrDefault(false)
                         }
                     } else {
-                        val token = AuthPreferences.getUser(context)?.token
+                        val token = AuthPreferences.getEffectiveToken(context)
                         val newPlaylist = createPlaylist(apiBaseUrl, name, context, token)
                         if (newPlaylist != null) {
                             addTracksToPlaylist(apiBaseUrl, newPlaylist.id, allTrackIds, context, token)
@@ -2743,7 +2743,7 @@ fun AddToPlaylistBottomSheet(
                                                         com.metrolist.innertube.YouTube.addToPlaylist(playlist.id, track).isSuccess
                                                     }
                                             } else {
-                                                val token = AuthPreferences.getUser(context)?.token
+                                                val token = AuthPreferences.getEffectiveToken(context)
                                                 addTracksToPlaylist(apiBaseUrl, playlist.id, allTrackIds, context, token)
                                             }
                                             withContext(Dispatchers.Main) {

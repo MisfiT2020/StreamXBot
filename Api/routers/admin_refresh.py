@@ -15,35 +15,13 @@ from Api.services.track_service import (
     refresh_user_top_played_cache_bulk,
     rebuild_global_playback_from_userplayback,
 )
-from Api.utils.auth import require_user_id
+from Api.utils.auth import require_user_id, require_admin_user_id
 from Api.deps.db import get_audio_tracks_collection
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 
 
 router = APIRouter(prefix="/admin/refresh", tags=["admin"])
-
-
-def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
-    uid = int(user_id)
-    owners = getattr(Config, "OWNER_ID", None) or []
-    sudos = getattr(Config, "SUDO_USERS", None) or []
-    allow: set[int] = set()
-    for v in (owners or []):
-        try:
-            allow.add(int(v))
-        except Exception:
-            pass
-    for v in (sudos or []):
-        try:
-            allow.add(int(v))
-        except Exception:
-            pass
-    if not allow:
-        raise HTTPException(status_code=403, detail="admin access not configured")
-    if uid not in allow:
-        raise HTTPException(status_code=403, detail="admin only")
-    return uid
 
 
 _ALBUM_ARTIST_SPLIT_RE = re.compile(r"\s*(?:,|/|&| and | x | feat\. | feat | ft\. | ft )\s*", flags=re.I)

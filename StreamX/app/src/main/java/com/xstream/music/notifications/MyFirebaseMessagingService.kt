@@ -39,13 +39,13 @@ class MyFirebaseMessagingService : FirebaseMessagingService() {
         Timber.d("onNewToken called with token: $token")
         
         
-        val user = AuthPreferences.getUser(applicationContext)
+        val user = AuthPreferences.getEffectiveToken(applicationContext)
         val apiUrl = ApiPreferences.getApiUrl(applicationContext)
         
         if (user != null && apiUrl.isNotEmpty()) {
             Timber.d("User is logged in, sending new token to backend...")
             scope.launch {
-                val success = registerFcmToken(apiUrl, token, user.token)
+                val success = registerFcmToken(apiUrl, token, user)
                 Timber.d("Token registration outcome: $success")
             }
         } else {

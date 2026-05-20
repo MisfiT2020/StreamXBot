@@ -13,6 +13,9 @@
     <a href="https://t.me/RaidenEISupport">
       <img src="https://img.shields.io/badge/Support%20Group-Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Support Group" />
     </a>
+    <a href="#tutorials">
+      <img src="https://img.shields.io/badge/Tutorials-Video-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Tutorials" />
+    </a>
   </p>
   <p>
     <a href="https://render.com/deploy?repo=https://github.com/MisfiT2020/StreamXBot">
@@ -208,6 +211,13 @@ Health check:
 ```text
 GET /health
 ```
+
+## Tutorials
+
+| Topic | Video |
+| --- | --- |
+| VPS Setup | [YouTube](https://www.youtube.com/watch?v=n36uEef8VrE) |
+| Render / Koyeb / Other Platforms | [YouTube](https://www.youtube.com/watch?v=A6kBOLGAbnk) |
 
 ## Main Config
 

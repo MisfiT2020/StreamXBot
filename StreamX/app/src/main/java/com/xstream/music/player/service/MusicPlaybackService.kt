@@ -178,7 +178,7 @@ class MusicPlaybackService : MediaSessionService() {
             if (trackId.isNullOrBlank()) return@launch
             
             val context = this@MusicPlaybackService
-            val userToken = AuthPreferences.getUser(context)?.token
+            val userToken = AuthPreferences.getEffectiveToken(context)
             val apiBaseUrl = ApiPreferences.getApiUrl(context)
             
             val isFavorite = DataCache.favoriteIds.value.contains(trackId)

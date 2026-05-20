@@ -124,12 +124,12 @@ class MainActivity : ComponentActivity() {
             Timber.d("FCM Token retrieved successfully: $token")
 
             
-            val user = AuthPreferences.getUser(applicationContext)
+            val user = AuthPreferences.getEffectiveToken(applicationContext)
             val apiUrl = ApiPreferences.getApiUrl(applicationContext)
             if (user != null && apiUrl.isNotEmpty()) {
                 Timber.d("User is logged in, registering token with backend...")
                 lifecycleScope.launch {
-                    val success = registerFcmToken(apiUrl, token, user.token)
+                    val success = registerFcmToken(apiUrl, token, user)
                     Timber.d("FCM token registration success: $success")
                 }
             } else {

@@ -288,9 +288,11 @@ async def update_settings(payload: SettingsPayload, user_id: int = Depends(requi
 
 
 @router.get("/settings")
-async def get_settings(user_id: int = Depends(require_user_id)):
+async def get_settings(user_id: Optional[int] = Depends(require_user_id)):
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="login required")
     users_col = db_handler.get_collection("users").collection
-    doc = await users_col.find_one({"_id": int(user_id)}, {"settings": 1})
+    doc = await users_col.find_one({"_id": user_id}, {"settings": 1})
     settings = doc.get("settings", {}) if isinstance(doc, dict) else {}
     if not isinstance(settings, dict):
         settings = {}

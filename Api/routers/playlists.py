@@ -1,5 +1,6 @@
 import time
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -114,10 +115,12 @@ async def create_playlist(payload: PlaylistCreate, user_id: int = Depends(requir
 
 
 @router.get("/playlists", response_model=PlaylistsResponse)
-async def list_playlists(user_id: int = Depends(require_user_id)):
+async def list_playlists(user_id: Optional[int] = Depends(require_user_id)):
+    if user_id is None:
+        return PlaylistsResponse(items=[])
     col = db_handler.get_collection("user_playlists").collection
     cursor = col.find(
-        {"user_id": int(user_id)},
+        {"user_id": user_id},
         {"_id": 1, "name": 1, "cover_id": 1, "cover_url": 1, "normal_thumbnail": 1, "collage_hash": 1, "created_at": 1, "updated_at": 1},
     ).sort([("created_at", -1)])
     raw_items: list[dict] = []

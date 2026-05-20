@@ -51,7 +51,10 @@ object JamWebSocketManager {
     private const val MAX_RECONNECT_DELAY = 5000L
 
     fun connect(apiBaseUrl: String, jamId: String, token: String, initialState: Jam? = null) {
-        
+        if (token.isBlank()) {
+            Timber.d("Blocking Jam WebSocket connection for unauthenticated guest.")
+            return
+        }
         
         manualDisconnectRequested = false
         disconnect(isReconnecting = true)

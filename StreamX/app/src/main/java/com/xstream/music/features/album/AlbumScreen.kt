@@ -378,7 +378,7 @@ fun AlbumScreen(
                                         },
                                         onFavouriteClick = {
                                             scope.launch {
-                                                val userToken = AuthPreferences.getUser(context)?.token
+                                                val userToken = AuthPreferences.getEffectiveToken(context)
                                                 toggleFavorite(apiUrl, song, context, userToken)
                                             }
                                         },
@@ -566,7 +566,7 @@ fun AlbumScreen(
                             onClick = { 
                                 scope.launch {
                                     albumId?.let { id ->
-                                        val token = AuthPreferences.getUser(context)?.token
+                                        val token = AuthPreferences.getEffectiveToken(context)
                                         val success = saveAlbum(apiUrl, id, context, token)
                                         if (success) {
                                             DataCache.savedAlbumIds.value += id
@@ -667,7 +667,7 @@ fun AlbumScreen(
                                                 apiBaseUrl = apiUrl,
                                                 songs = songs,
                                                 context = context,
-                                                token = AuthPreferences.getUser(context)?.token
+                                                token = AuthPreferences.getEffectiveToken(context)
                                             )
                                             val message = when {
                                                 addedCount > 0 -> "Added $addedCount tracks to favourites"

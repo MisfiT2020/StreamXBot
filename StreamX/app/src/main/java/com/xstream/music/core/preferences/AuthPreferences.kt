@@ -20,6 +20,7 @@ object AuthPreferences {
     private const val KEY_FIRST_NAME = "first_name"
     private const val KEY_PROFILE_URL = "profile_url"
     private const val KEY_PHOTO_URL = "photo_url"
+    private const val KEY_API_TOKEN = "api_token"
 
     fun saveUser(context: Context, user: UserData) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -46,5 +47,28 @@ object AuthPreferences {
     fun clear(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().clear().apply()
+    }
+
+    fun saveApiToken(context: Context, token: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_API_TOKEN, token)
+            .apply()
+    }
+
+    fun getApiToken(context: Context): String? {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_API_TOKEN, null)
+    }
+
+    fun clearApiToken(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_API_TOKEN)
+            .apply()
+    }
+
+    fun getEffectiveToken(context: Context): String? {
+        return getUser(context)?.token ?: getApiToken(context)
     }
 }

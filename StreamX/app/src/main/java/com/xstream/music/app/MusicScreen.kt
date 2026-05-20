@@ -284,10 +284,11 @@ fun MusicScreen(
     
     LaunchedEffect(Unit) {
         val savedUrl = ApiPreferences.getApiUrl(context)
-        val token = AuthPreferences.getUser(context)?.token
-        if (savedUrl.isNotBlank() && token != null) {
+        val user = AuthPreferences.getUser(context)
+        if (savedUrl.isNotBlank() && user != null) {
             scope.launch {
-                val settingsResult = fetchFriendSettings(savedUrl, token)
+                val token = AuthPreferences.getEffectiveToken(context)
+                val settingsResult = fetchFriendSettings(savedUrl, token ?: "")
                 if (settingsResult?.ok == true && settingsResult.settings != null) {
                     friendSettingsState.value = settingsResult.settings
                     DataCache.setFriendSettings(context, settingsResult.settings)
@@ -325,7 +326,7 @@ fun MusicScreen(
                 apiUrlState.value = resolvedApiUrl
             }
 
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             val resp = joinJam(resolvedApiUrl, initialJamId, context, token)
             if (resp.ok && resp.jam != null) {
                 jamIdState.value = resp.jam.id
@@ -397,7 +398,7 @@ fun MusicScreen(
                 apiUrlState.value = resolvedApiUrl
             }
 
-            val token = AuthPreferences.getUser(context)?.token
+            val token = AuthPreferences.getEffectiveToken(context)
             val song = fetchSong(resolvedApiUrl, initialTrackId, context, token)
             if (song != null) {
                 playerManager.setQueueFromLatest(listOf(song), 0, resolvedApiUrl, token)
@@ -414,9 +415,9 @@ fun MusicScreen(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 val apiUrl = apiUrlState.value
-                val token = AuthPreferences.getUser(context)?.token
-                if (apiUrl.isNotBlank() && token != null) {
-                    
+                val user = AuthPreferences.getUser(context)
+                if (apiUrl.isNotBlank() && user != null) {
+                    val token = AuthPreferences.getEffectiveToken(context) ?: ""
                     scope.launch {
                         val settingsResult = fetchFriendSettings(apiUrl, token)
                         if (settingsResult?.ok == true && settingsResult.settings != null) {
@@ -435,7 +436,7 @@ fun MusicScreen(
                         if (friendsResult != null) {
                             friendsState.value = friendsResult
                         }
-                        
+
                         val listeningResult = runCatching { fetchFriendsListening(apiUrl, token) }.getOrNull()
                         if (listeningResult != null) {
                             friendsListeningState.value = mapListening(listeningResult)
@@ -548,7 +549,7 @@ fun MusicScreen(
                 
                 launch {
                     isLoadingRandomMixState.value = true
-                    val token = AuthPreferences.getUser(context)?.token
+                    val token = AuthPreferences.getEffectiveToken(context)
                     val fetchedRandom = withContext(kotlinx.coroutines.Dispatchers.IO) {
                         runCatching { fetchRandomMix(apiUrlState.value, limit = 100, token = token) }.getOrNull().orEmpty()
                     }
@@ -562,7 +563,7 @@ fun MusicScreen(
                 }
                 
                 launch {
-                    val token = AuthPreferences.getUser(context)?.token
+                    val token = AuthPreferences.getEffectiveToken(context)
                     val fetchedUserPlaylists = withContext(kotlinx.coroutines.Dispatchers.IO) {
                         runCatching { fetchUserPlaylists(apiUrlState.value, context = context, token = token) }.getOrNull().orEmpty()
                     }
@@ -685,7 +686,7 @@ fun MusicScreen(
         val storedJamId = JamPreferences.getStoredJamId(context)
         if (!storedJamId.isNullOrBlank()) {
             launch {
-                val token = AuthPreferences.getUser(context)?.token
+                val token = AuthPreferences.getEffectiveToken(context)
                 val jamResp = fetchJam(savedUrl, storedJamId, context, token)
                 if (jamResp.ok && jamResp.jam != null) {
                     jamIdState.value = jamResp.jam.id
@@ -748,7 +749,7 @@ fun MusicScreen(
         if (shouldFetchRandom) {
             launch {
                 isLoadingRandomMixState.value = true
-                val token = AuthPreferences.getUser(context)?.token
+                val token = AuthPreferences.getEffectiveToken(context)
                 val fetchedRandom = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     runCatching { fetchRandomMix(savedUrl, limit = 100, token = token) }.getOrNull().orEmpty()
                 }
@@ -764,7 +765,7 @@ fun MusicScreen(
         
         if (shouldFetchUserPlaylists) {
             launch {
-                val token = AuthPreferences.getUser(context)?.token
+                val token = AuthPreferences.getEffectiveToken(context)
                 val fetchedUserPlaylists = withContext(kotlinx.coroutines.Dispatchers.IO) {
                     runCatching { fetchUserPlaylists(savedUrl, context = context, token = token) }.getOrNull().orEmpty()
                 }
@@ -778,40 +779,41 @@ fun MusicScreen(
         }
         
         launch {
-            val token = AuthPreferences.getUser(context)?.token
-            if (token != null) {
+            val user = AuthPreferences.getUser(context)
+            if (user != null) {
+                val token = AuthPreferences.getEffectiveToken(context) ?: ""
                 val settingsResult = fetchFriendSettings(savedUrl, token)
                 if (settingsResult?.ok == true && settingsResult.settings != null) {
                     friendSettingsState.value = settingsResult.settings
                     DataCache.setFriendSettings(context, settingsResult.settings)
                 }
-                
+
                 if (friendSettingsState.value?.share_listening != "none") {
                     PresenceWebSocketManager.connect(savedUrl, token)
                 } else {
                     PresenceWebSocketManager.disconnect()
                 }
-                
+
                 val fetchedFavs = runCatching { fetchFavoriteIds(savedUrl, context = context, token = token) }.getOrNull().orEmpty()
                 val currentFavs = DataCache.favoriteIds.value.toMutableSet()
                 currentFavs.addAll(fetchedFavs)
                 DataCache.favoriteIds.value = currentFavs
                 DataCache.saveFavoriteIds(context, currentFavs)
-                
+
                 val requestsResult = runCatching { fetchFriendRequests(savedUrl, token) }.getOrNull().orEmpty()
                 friendRequestsState.value = requestsResult
 
-                
+
                 if (friendsState.value.isEmpty()) isLoadingFriends.value = true
                 val friendsResult = runCatching { fetchFriends(savedUrl, token) }.getOrNull().orEmpty()
                 friendsState.value = friendsResult
-                
+
                 val listeningResult = runCatching { fetchFriendsListening(savedUrl, token) }.getOrNull().orEmpty()
                 val listeningMap = mapListening(listeningResult)
                 friendsListeningState.value = listeningMap
                 isLoadingFriends.value = false
 
-                
+
                 launch {
                     while (isActive) {
                         kotlinx.coroutines.delay(60_000L)
@@ -1073,7 +1075,7 @@ fun MusicScreen(
                         if (currentHomeProvider == "youtube") {
                             YouTubeHomeScreen(
                                 onSongClick = { songs, index ->
-                                    val token = AuthPreferences.getUser(context)?.token
+                                    val token = AuthPreferences.getEffectiveToken(context)
                                     playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
                                 },
                                 onPlaylistClick = { playlist ->
@@ -1199,7 +1201,7 @@ fun MusicScreen(
                                                 onSongClick = { song ->
                                                     val index = latestSongsState.value.indexOf(song)
                                                     if (index != -1) {
-                                                        val token = AuthPreferences.getUser(context)?.token
+                                                        val token = AuthPreferences.getEffectiveToken(context)
                                                         playerManager.setQueueFromLatest(latestSongsState.value, index, apiUrlState.value, token)
                                                     }
                                                 },
@@ -1231,7 +1233,7 @@ fun MusicScreen(
                                                 onSongClick = { song ->
                                                     val index = randomMixSongsState.value.indexOf(song)
                                                     if (index != -1) {
-                                                        val token = AuthPreferences.getUser(context)?.token
+                                                        val token = AuthPreferences.getEffectiveToken(context)
                                                         playerManager.setQueueFromLatest(randomMixSongsState.value, index, apiUrlState.value, token)
                                                     }
                                                 },
@@ -1241,7 +1243,7 @@ fun MusicScreen(
                                                 onRefreshClick = {
                                                     scope.launch {
                                                         isLoadingRandomMixState.value = true
-                                                        val token = AuthPreferences.getUser(context)?.token
+                                                        val token = AuthPreferences.getEffectiveToken(context)
                                                         val fetchedRandom = runCatching { fetchRandomMix(apiUrlState.value, limit = 100, token = token) }.getOrNull().orEmpty()
                                                         if (fetchedRandom.isNotEmpty()) {
                                                             val frozen = freezeList(fetchedRandom)
@@ -1318,7 +1320,7 @@ fun MusicScreen(
                                             },
                                             onDeleteClick = { playlist ->
                                                 scope.launch {
-                                                    val token = AuthPreferences.getUser(context)?.token
+                                                    val token = AuthPreferences.getEffectiveToken(context)
                                                     val success = deletePlaylist(apiUrlState.value, playlist.id, context, token)
                                                     if (success) {
                                                         
@@ -1359,7 +1361,7 @@ fun MusicScreen(
                                             onSettingsClick = { showFriendsSettingsDialog.value = true },
                                             onRefreshClick = {
                                                 scope.launch {
-                                                    val token = AuthPreferences.getUser(context)?.token
+                                                    val token = AuthPreferences.getEffectiveToken(context)
                                                     if (token != null && apiUrlState.value.isNotBlank()) {
                                                         isLoadingFriends.value = true
                                                         friendRequestsState.value = runCatching { fetchFriendRequests(apiUrlState.value, token) }.getOrNull().orEmpty()
@@ -1396,7 +1398,7 @@ fun MusicScreen(
                                             },
                                             onAcceptRequestClick = { userId ->
                                                 scope.launch {
-                                                    val token = AuthPreferences.getUser(context)?.token
+                                                    val token = AuthPreferences.getEffectiveToken(context)
                                                     if (token != null) {
                                                         val success = runCatching { acceptFriendRequest(apiUrlState.value, token, userId) }.getOrNull()?.isSuccess == true
                                                         if (success) {
@@ -1469,7 +1471,7 @@ fun MusicScreen(
                             apiUrl = apiUrlState.value,
                             onBack = { currentScreen.value = "home" },
                             onSongClick = { songs, index ->
-                                val token = AuthPreferences.getUser(context)?.token
+                                val token = AuthPreferences.getEffectiveToken(context)
                                 playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
                             },
                             onAlbumClick = { id ->
@@ -1486,7 +1488,7 @@ fun MusicScreen(
                         )
                     }
                     "random_mix" -> {
-                        val token = remember(userState.value) { AuthPreferences.getUser(context)?.token }
+                        val token = remember(userState.value) { AuthPreferences.getEffectiveToken(context) }
                         RandomMixScreen(
                             songs = randomMixSongsState.value,
                             isLoading = isLoadingRandomMixState.value,
@@ -1527,7 +1529,7 @@ fun MusicScreen(
                                 searchQueryState.value = newQuery
                             },
                             onSongClick = { songs, index ->
-                                val token = AuthPreferences.getUser(context)?.token
+                                val token = AuthPreferences.getEffectiveToken(context)
                                 val song = songs.getOrNull(index)
                                 if (DataCache.getProvider(context) == "youtube" && song?.id?.startsWith("yt_") == true) {
                                     scope.launch {
@@ -1651,7 +1653,7 @@ fun MusicScreen(
                                         song = song, 
                                         showFavoriteStar = false,
                                         onClick = { 
-                                            val token = AuthPreferences.getUser(context)?.token
+                                            val token = AuthPreferences.getEffectiveToken(context)
                                             playerManager.setQueueFromLatest(ytQuickPicksSongsState.value, index, apiUrlState.value, token)
                                         }
                                     )
@@ -1775,7 +1777,7 @@ fun MusicScreen(
                                                         val songs = ytSectionItemsState.value.mapNotNull { (it as? SongItem)?.toSong() }
                                                         val index = songs.indexOfFirst { it.id == song.id }
                                                         if (index != -1) {
-                                                            val token = AuthPreferences.getUser(context)?.token
+                                                            val token = AuthPreferences.getEffectiveToken(context)
                                                             playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
                                                         }
                                                     }
@@ -1862,7 +1864,7 @@ fun MusicScreen(
                                     }
                                 },
                                 onSongClick = { songs, index ->
-                                    val token = AuthPreferences.getUser(context)?.token
+                                    val token = AuthPreferences.getEffectiveToken(context)
                                     playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
                                 },
                                 isPlayerVisible = playerManager.currentSong.value != null,
@@ -1882,7 +1884,7 @@ fun MusicScreen(
                                 },
                                 onDeleteClick = { p ->
                                     scope.launch {
-                                        val token = AuthPreferences.getUser(context)?.token
+                                        val token = AuthPreferences.getEffectiveToken(context)
                                         val success = deletePlaylist(apiUrlState.value, p.id, context, token)
                                         if (success) {
                                             
@@ -1919,7 +1921,7 @@ fun MusicScreen(
                                     navigateBack()
                                 },
                                 onSongClick = { songs, index ->
-                                    val token = AuthPreferences.getUser(context)?.token
+                                    val token = AuthPreferences.getEffectiveToken(context)
                                     playerManager.setQueueFromLatest(songs, index, apiUrlState.value, token)
                                 },
                                 isPlayerVisible = playerManager.currentSong.value != null,
@@ -2108,7 +2110,7 @@ fun MusicScreen(
                 onDismiss = { showAddFriendDialog.value = false },
                 onAdd = { userId ->
                     scope.launch {
-                        val token = AuthPreferences.getUser(context)?.token
+                        val token = AuthPreferences.getEffectiveToken(context)
                         val success = runCatching { sendFriendRequest(apiUrlState.value, token, userId) }.getOrNull()?.isSuccess == true
                         if (success) {
                             android.widget.Toast.makeText(context, "Friend request sent", android.widget.Toast.LENGTH_SHORT).show()
@@ -2127,7 +2129,7 @@ fun MusicScreen(
                 onDismiss = { friendToRemove.value = null },
                 onConfirm = {
                     scope.launch {
-                        val token = AuthPreferences.getUser(context)?.token
+                        val token = AuthPreferences.getEffectiveToken(context)
                         if (token != null) {
                             val success = removeFriend(apiUrlState.value, token, friend._id)
                             if (success) {
@@ -2168,14 +2170,14 @@ fun MusicScreen(
                     if (newSettings.share_listening == "none") {
                         PresenceWebSocketManager.disconnect()
                     } else {
-                        val token = AuthPreferences.getUser(context)?.token
+                        val token = AuthPreferences.getEffectiveToken(context)
                         if (token != null) {
                             PresenceWebSocketManager.connect(apiUrlState.value, token)
                         }
                     }
                     
                     scope.launch {
-                        val token = AuthPreferences.getUser(context)?.token
+                        val token = AuthPreferences.getEffectiveToken(context)
                         if (token != null) {
                             val success = updateFriendSettings(apiUrlState.value, token, newSettings)
                             if (success) {
@@ -2196,7 +2198,7 @@ fun MusicScreen(
                 onDismiss = { showCreatePlaylistDialog.value = false },
                 onCreate = { name ->
                     scope.launch {
-                        val token = AuthPreferences.getUser(context)?.token
+                        val token = AuthPreferences.getEffectiveToken(context)
                         val newPlaylist = createPlaylist(apiUrlState.value, name, context, token)
                         if (newPlaylist != null) {
                             
@@ -2221,7 +2223,7 @@ fun MusicScreen(
                     },
                     onRename = { newName ->
                         scope.launch {
-                            val token = AuthPreferences.getUser(context)?.token
+                            val token = AuthPreferences.getEffectiveToken(context)
                             val success = renamePlaylist(apiUrlState.value, playlist.id, newName, context, token)
                             if (success) {
                                 
@@ -3456,7 +3458,7 @@ private fun ApiScreen(
         expandedLogsApiUrl = normalized
 
         if (logsByApi[normalized] != null || logsLoadingApiUrl == normalized) return
-        val token = AuthPreferences.getUser(context)?.token
+        val token = AuthPreferences.getEffectiveToken(context)
         if (token.isNullOrBlank()) {
             logsErrorByApi = logsErrorByApi + (normalized to "Login required to view logs.")
             return
@@ -3876,18 +3878,13 @@ private fun ApiScreen(
                             }
                             passwordDialogLoading = false
                             if (response.ok && response.token != null) {
-                                val userData = UserData(
-                                    id = response.user_id ?: 0,
-                                    token = response.token,
-                                    firstName = response.first_name ?: "Owner",
-                                    profileUrl = response.profile_url ?: "",
-                                    photoUrl = response.photo_url ?: ""
-                                )
-                                AuthPreferences.saveUser(context, userData)
+                                AuthPreferences.clear(context) // Sign out of current account
+                                AuthPreferences.saveApiToken(context, response.token)
                                 showPasswordDialog = false
                                 passwordInput = ""
                                 onSave(passwordDialogApiUrl)
-                            } else {
+                            }
+ else {
                                 passwordDialogError = if (passwordDialogIsSetup) {
                                     "Setup failed. The server may already be configured."
                                 } else {
