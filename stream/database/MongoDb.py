@@ -143,6 +143,7 @@ class MongoDatabase:
             'user_playlists': 'userPlaylists',
             'playlist_tracks': 'playlistTracks',
             'user_favourites': 'userFavourites',
+            'user_history': 'userHistory',
             'userplayback_collection': 'userPlayback',
             'globalplayback_collection': 'globalPlayback',
             'friends_collection': 'friends',

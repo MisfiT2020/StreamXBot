@@ -152,8 +152,9 @@ function App() {
         return
       }
 
-      if (isApiToken(getAuthToken())) {
-        console.log('Skipping webapp/verify because an API token is already active.')
+      const activeToken = getAuthToken()
+      if (activeToken && !isApiToken(activeToken)) {
+        console.log('Skipping webapp/verify because an account token is already active.')
         return
       }
 

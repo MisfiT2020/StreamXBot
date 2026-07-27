@@ -21,6 +21,7 @@ from Api.schemas.track import TrackResponse
 from Api.services.lyrics_service import get_track_lyrics
 from Api.services.stream_service import download_track, stream_track, warm_track_cached
 from Api.services.track_service import (
+    attach_liked_to_dicts,
     get_daily_playlist,
     get_daily_playlist_thumbnail_info,
     get_track_by_id,
@@ -28,7 +29,7 @@ from Api.services.track_service import (
     random_tracks,
     search_tracks,
 )
-from Api.utils.auth import require_admin_user_id, require_user_id, verify_auth_token
+from Api.utils.auth import get_optional_user_id, require_admin_user_id, require_user_id, verify_auth_token
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 
@@ -632,6 +633,86 @@ async def _refresh_albums_cache(*, limit_albums: int = 2000) -> dict[str, int]:
     return {"processed": processed, "upserted": upserted}
 
 
+def _is_default_deezer_avatar(url: str | None) -> bool:
+    """Return True if the URL is the empty/default Deezer artist avatar."""
+    if not url or not isinstance(url, str):
+        return False
+    return "cdn-images.dzcdn.net/images/artist//" in url
+
+
+async def _fetch_artist_avatar(client: httpx.AsyncClient, name: str, track_title: str | None = None) -> str | None:
+    if not name or not name.strip():
+        return None
+    clean_name = name.strip()
+
+    # --- 1. Try Deezer direct artist search ---
+    try:
+        r = await client.get("https://api.deezer.com/search/artist", params={"q": clean_name}, timeout=5.0)
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            if data and isinstance(data[0], dict):
+                art = data[0]
+                pic = art.get("picture_xl") or art.get("picture_big") or art.get("picture_medium")
+                if pic and not _is_default_deezer_avatar(pic):
+                    return pic
+    except Exception:
+        pass
+
+    # --- 2. Try iTunes song search -> get artist name -> Deezer artist search ---
+    try:
+        search_term = track_title or clean_name
+        ir = await client.get("https://itunes.apple.com/search", params={"term": search_term, "entity": "song", "limit": 1, "country": "in"}, timeout=5.0)
+        if ir.status_code == 200:
+            results = ir.json().get("results", [])
+            if results and isinstance(results[0], dict):
+                itunes_artist = results[0].get("artistName", "")
+                artists = _split_artists(itunes_artist)
+                for a in artists:
+                    try:
+                        dr = await client.get("https://api.deezer.com/search/artist", params={"q": a}, timeout=5.0)
+                        if dr.status_code == 200:
+                            ddata = dr.json().get("data", [])
+                            if ddata and isinstance(ddata[0], dict):
+                                art = ddata[0]
+                                pic = art.get("picture_xl") or art.get("picture_big") or art.get("picture_medium")
+                                if pic and not _is_default_deezer_avatar(pic):
+                                    return pic
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # --- 3. Try iTunes musicArtist search for profile image ---
+    try:
+        ir2 = await client.get("https://itunes.apple.com/search", params={"term": clean_name, "entity": "musicArtist", "limit": 5}, timeout=5.0)
+        if ir2.status_code == 200:
+            results = ir2.json().get("results", [])
+            for artist_result in results:
+                if not isinstance(artist_result, dict):
+                    continue
+                artist_link = artist_result.get("artistLinkUrl")
+                if not artist_link:
+                    continue
+                try:
+                    page_resp = await client.get(artist_link, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=8.0, follow_redirects=True)
+                    if page_resp.status_code == 200:
+                        html = page_resp.text
+                        import re as _re
+                        match = _re.search(r'property="og:image"\s+content="([^"]+)"', html)
+                        if not match:
+                            match = _re.search(r'content="([^"]+)"\s+property="og:image"', html)
+                        if not match:
+                            match = _re.search(r'name="twitter:image"\s+content="([^"]+)"', html)
+                        if match:
+                            return match.group(1)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return None
+
+
 async def _refresh_artists_cache(*, limit_tracks: int = 20000, limit_artists: int = 5000) -> dict[str, int]:
     limit_tracks = int(limit_tracks)
     if limit_tracks <= 0:
@@ -669,72 +750,96 @@ async def _refresh_artists_cache(*, limit_tracks: int = 20000, limit_artists: in
         if isinstance(raw_artists, list):
             for a in raw_artists:
                 if isinstance(a, str) and a.strip():
-                    artists.append(a.strip())
+                    artists.extend(_split_artists(a.strip()))
         if not artists:
             raw_artist = audio.get("artist") or audio.get("performer") or ""
             raw_artist = raw_artist.strip() if isinstance(raw_artist, str) else ""
             if not raw_artist:
                 continue
-            artists = _split_artists(raw_artist) or [raw_artist]
+            artists = _split_artists(raw_artist)
         cover_url = ""
-        spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
-        if isinstance(spotify.get("cover_url"), str):
-            cover_url = _clean_url(spotify.get("cover_url"))
         updated_at = float(doc.get("updated_at") or 0.0)
         for name in artists:
-            k = name.casefold().strip()
-            if not k:
+            name = name.strip()
+            if not name:
                 continue
-            entry = by_key.get(k)
-            if entry is None:
-                by_key[k] = {
-                    "name": name,
-                    "match_artist": k,
-                    "cover_url": cover_url or None,
-                    "tracks_count": 1,
-                    "updated_at": updated_at,
-                }
-            else:
-                entry["tracks_count"] = int(entry.get("tracks_count") or 0) + 1
-                prev_updated = float(entry.get("updated_at") or 0.0)
-                if updated_at > prev_updated:
-                    entry["updated_at"] = updated_at
-                    if cover_url:
-                        entry["cover_url"] = cover_url
+            sub_parts = _split_artists(name) if ("/" in name or "," in name or " & " in name or " feat " in name.lower()) else [name]
+            for sub_name in sub_parts:
+                k = sub_name.casefold().strip()
+                if not k:
+                    continue
+                entry = by_key.get(k)
+                if entry is None:
+                    by_key[k] = {
+                        "name": sub_name,
+                        "match_artist": k,
+                        "tracks_count": 1,
+                        "updated_at": updated_at,
+                    }
+                else:
+                    entry["tracks_count"] = int(entry.get("tracks_count") or 0) + 1
+                    prev_updated = float(entry.get("updated_at") or 0.0)
+                    if updated_at > prev_updated:
+                        entry["updated_at"] = updated_at
         if len(by_key) >= limit_artists:
             for_limit += 1
             if for_limit >= 250:
                 break
 
     artists_col = db_handler.get_collection("artists").collection
+    try:
+        await artists_col.delete_many({
+            "$or": [
+                {"name": {"$regex": "/|,|&| feat| ft | featuring ", "$options": "i"}},
+                {"_id": {"$regex": "/|,|&| feat| ft | featuring ", "$options": "i"}},
+                {"match_artist": {"$regex": "/|,|&| feat| ft | featuring ", "$options": "i"}},
+            ]
+        })
+    except Exception:
+        pass
     now = time.time()
     upserted = 0
     processed = 0
-    for k, entry in sorted(by_key.items(), key=lambda kv: float(kv[1].get("updated_at") or 0.0), reverse=True)[:limit_artists]:
-        processed += 1
-        name = (entry.get("name") or "").strip()
-        match_artist = (entry.get("match_artist") or "").strip()
-        if not name or not match_artist:
-            continue
-        aid = _artist_id(name)
-        if not aid:
-            continue
-        res = await artists_col.update_one(
-            {"_id": aid},
-            {
-                "$setOnInsert": {"created_at": now, "followers": 0},
-                "$set": {
-                    "name": name,
-                    "cover_url": entry.get("cover_url"),
-                    "tracks_count": int(entry.get("tracks_count") or 0),
-                    "match_artist": match_artist,
-                    "updated_at": float(entry.get("updated_at") or now),
+    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as http_client:
+        for k, entry in sorted(by_key.items(), key=lambda kv: float(kv[1].get("updated_at") or 0.0), reverse=True)[:limit_artists]:
+            processed += 1
+            name = (entry.get("name") or "").strip()
+            match_artist = (entry.get("match_artist") or "").strip()
+            if not name or not match_artist:
+                continue
+            aid = _artist_id(name)
+            if not aid:
+                continue
+
+            existing = await artists_col.find_one({"_id": aid}, {"cover_url": 1})
+            existing_cover = ""
+            if existing and isinstance(existing.get("cover_url"), str):
+                existing_cover = existing["cover_url"].strip()
+
+            has_good_cover = existing_cover and not _is_default_deezer_avatar(existing_cover)
+            if has_good_cover:
+                c_url = existing_cover
+            else:
+                c_url = await _fetch_artist_avatar(http_client, name)
+                if not c_url:
+                    c_url = existing_cover or None
+
+            res = await artists_col.update_one(
+                {"_id": aid},
+                {
+                    "$setOnInsert": {"created_at": now, "followers": 0},
+                    "$set": {
+                        "name": name,
+                        "cover_url": c_url,
+                        "tracks_count": int(entry.get("tracks_count") or 0),
+                        "match_artist": match_artist,
+                        "updated_at": float(entry.get("updated_at") or now),
+                    },
                 },
-            },
-            upsert=True,
-        )
-        if getattr(res, "upserted_id", None) is not None:
-            upserted += 1
+                upsert=True,
+            )
+            if getattr(res, "upserted_id", None) is not None:
+                upserted += 1
 
     return {"scanned_tracks": scanned, "processed_artists": processed, "upserted": upserted}
 
@@ -878,13 +983,14 @@ async def search(
     channel_id: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=50),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
     raw = (q or "").strip()
     if not raw:
         raw = (query or "").strip()
     if not raw:
         return BrowseResponse(page=int(page), per_page=int(limit), total=0, items=[])
-    return await search_tracks(raw, channel_id=channel_id, page=int(page), per_page=int(limit))
+    return await search_tracks(raw, channel_id=channel_id, page=int(page), per_page=int(limit), user_id=user_id)
 
 @router.get("/tracks/search", response_model=BrowseResponse)
 async def track_search(
@@ -892,307 +998,123 @@ async def track_search(
     channel_id: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=50),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
     q = (q or "").strip()
     if not q:
         return BrowseResponse(page=int(page), per_page=int(limit), total=0, items=[])
-    return await search_tracks(q, channel_id=channel_id, page=int(page), per_page=int(limit))
+    return await search_tracks(q, channel_id=channel_id, page=int(page), per_page=int(limit), user_id=user_id)
 
 
-@router.get("/search/artists", response_model=ArtistSearchResponse)
-async def search_artists(
-    q: str = Query(default="", min_length=0, max_length=80),
-    limit: int = Query(default=1, ge=1, le=25),
-    include_page: bool = Query(default=True),
+@router.get("/search/artist/{artist_name}")
+@router.get("/search/artist")
+@router.get("/search/artists")
+async def search_artists_db(
+    artist_name: str = "",
+    q: str = "",
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
-    term = (q or "").strip()
-    if not term:
-        return ArtistSearchResponse(q="", country=str(getattr(Config, "SHAZAM_COUNTRY", "IN") or "IN"), items=[])
+    query_str = (artist_name or q or "").strip()
+    artists_col = db_handler.get_collection("artists").collection
+    filter_query: dict[str, Any] = {}
 
-    base_country = str(getattr(Config, "SHAZAM_COUNTRY", "IN") or "IN").strip().upper()
-    if len(base_country) not in (2, 3):
-        base_country = "IN"
+    if query_str:
+        escaped_query = re.escape(query_str)
+        filter_query = {
+            "$or": [
+                {"_id": {"$regex": escaped_query, "$options": "i"}},
+                {"name": {"$regex": escaped_query, "$options": "i"}},
+                {"match_artist": {"$regex": escaped_query, "$options": "i"}},
+            ]
+        }
 
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json",
-        "Referer": "https://www.shazam.com/",
-    }
-    timeout = httpx.Timeout(10.0, connect=10.0)
-    sem = asyncio.Semaphore(6)
+    total = await artists_col.count_documents(filter_query)
+    skip = (int(page) - 1) * int(limit)
+    cursor = (
+        artists_col.find(filter_query, {"match_artist": 0})
+        .sort([("followers", -1), ("updated_at", -1)])
+        .skip(int(skip))
+        .limit(int(limit))
+    )
 
-    async def _get_json(url: str, *, params: dict[str, object] | None = None) -> Any:
-        async with sem:
-            return await _fetch_shazam_json(client, url, params=params)
-
-    async def _get_html(url: str) -> str:
-        async with sem:
-            return await _fetch_shazam_html(client, url)
-
-    async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
-        search_url = f"https://www.shazam.com/services/amapi/v1/catalog/{base_country}/search"
-        requested_limit = int(limit)
-        if requested_limit < 1:
-            requested_limit = 1
-        if requested_limit > 25:
-            requested_limit = 25
-        fetch_limit = max(requested_limit, 10)
-        raw = await _get_json(search_url, params={"types": "artists", "term": term, "limit": int(fetch_limit)})
-        nodes = _extract_artist_search_items(raw)
-
-        ranked_nodes: list[tuple[float, dict]] = []
-        for n in nodes:
-            attrs = n.get("attributes") if isinstance(n.get("attributes"), dict) else {}
-            name0 = _pick_first_str(attrs.get("name")) or _pick_first_str(n.get("name")) or ""
-            ranked_nodes.append((_artist_query_score(q=term, name=str(name0)), n))
-        ranked_nodes.sort(key=lambda x: x[0], reverse=True)
-        nodes2 = [n for _, n in ranked_nodes[:requested_limit]]
-
-        async def _hydrate(node: dict) -> ArtistSearchItem | None:
-            sid = _pick_first_str(node.get("id"))
-            href = _pick_first_str(node.get("href"))
-            detail: dict[str, Any] = {}
-            if href:
-                try:
-                    detail_url = f"https://www.shazam.com/services/amapi{href}"
-                    detail_json = await _get_json(detail_url)
-                    detail = _parse_shazam_artist_detail_json(detail_json)
-                except Exception:
-                    detail = {}
-
-            name = _pick_first_str(detail.get("name")) or _pick_first_str((node.get("attributes") or {}).get("name")) or None
-            if not sid:
-                sid = _pick_first_str(detail.get("id"))
-            if not href:
-                href = _pick_first_str(detail.get("href"))
-
-            html_meta: dict[str, Any] = {}
-            should_fetch_page = False
-            if include_page and sid and name:
-                should_fetch_page = True if requested_limit <= 5 else False
-            if not should_fetch_page:
-                if not detail.get("hometown") or not detail.get("formed"):
-                    should_fetch_page = True
-                if not detail.get("image_url") or not detail.get("description") or not (isinstance(detail.get("genres"), list) and detail.get("genres")):
-                    should_fetch_page = True
-
-            if include_page and should_fetch_page and sid and name:
-                try:
-                    slug = _shazam_artist_slug(name)
-                    page_url = f"https://www.shazam.com/artist/{slug}/{sid}"
-                    html = await _get_html(page_url)
-                    html_meta = _parse_shazam_artist_html(html)
-                except Exception:
-                    html_meta = {}
-
-            async def _enrich_members_with_images(members: list[dict[str, str]]) -> list[dict[str, str]]:
-                out_members: list[dict[str, str]] = []
-                for m in members[:12]:
-                    if not isinstance(m, dict):
-                        continue
-                    href2 = m.get("href")
-                    if not isinstance(href2, str) or not href2.strip():
-                        out_members.append(m)
-                        continue
-                    if isinstance(m.get("image_url"), str) and m.get("image_url", "").strip():
-                        resized = _resize_apple_image_url(m.get("image_url"), size=618)
-                        if resized:
-                            m = {**m, "image_url": resized}
-                        out_members.append(m)
-                        continue
-                    url2 = href2.strip()
-                    if url2.startswith("/"):
-                        url2 = "https://www.shazam.com" + url2
-                    try:
-                        html2 = await _get_html(url2)
-                        meta2 = _parse_shazam_artist_html(html2)
-                        img2 = _pick_first_str(meta2.get("image_url"))
-                        if img2:
-                            m = {**m, "image_url": _resize_apple_image_url(img2, size=618) or _clean_url(img2)}
-                    except Exception:
-                        pass
-                    out_members.append(m)
-                return out_members
-
-            genres = detail.get("genres") if isinstance(detail.get("genres"), list) else None
-            if not genres and isinstance(html_meta.get("genres"), list):
-                genres = html_meta.get("genres")
-
-            image_url = _pick_first_str(detail.get("image_url")) or _pick_first_str(html_meta.get("image_url"))
-            description = _pick_first_str(detail.get("description")) or _pick_first_str(html_meta.get("description"))
-            hometown = _pick_first_str(detail.get("hometown")) or _pick_first_str(html_meta.get("hometown"))
-            born = _pick_first_str(detail.get("born")) or _pick_first_str(html_meta.get("born"))
-            formed = _pick_first_str(detail.get("formed")) or _pick_first_str(html_meta.get("formed"))
-            if not formed:
-                formed = _infer_formed(description)
-
-            if not sid or not name:
-                return None
-
-            members = html_meta.get("members") if isinstance(html_meta.get("members"), list) else None
-            if members:
-                members = await _enrich_members_with_images(members)
-
-            return ArtistSearchItem(
-                id=str(sid),
-                href=href,
-                name=str(name),
-                image_url=_resize_apple_image_url(image_url, size=618) if image_url else None,
-                video_poster_url=_clean_url(_pick_first_str(html_meta.get("video_poster_url"))) if html_meta.get("video_poster_url") else None,
-                video_hls_url=_clean_url(_pick_first_str(html_meta.get("video_hls_url"))) if html_meta.get("video_hls_url") else None,
-                video_mp4_url=_clean_url(_pick_first_str(html_meta.get("video_mp4_url")))
-                if html_meta.get("video_mp4_url")
-                else _itunes_mp4_from_m3u8(_pick_first_str(html_meta.get("video_hls_url"))),
-                genres=[str(x) for x in genres] if isinstance(genres, list) else None,
-                description=description,
-                hometown=hometown,
-                born=born,
-                formed=formed,
-                links=html_meta.get("links") if isinstance(html_meta.get("links"), list) else None,
-                members=members,
-                member_of=html_meta.get("member_of") if isinstance(html_meta.get("member_of"), list) else None,
-                source="shazam",
-            )
-
-        hydrated = await asyncio.gather(*[_hydrate(n) for n in nodes2], return_exceptions=False)
-        items = [x for x in hydrated if x is not None]
-        items.sort(key=lambda it: _artist_query_score(q=term, name=str(it.name)), reverse=True)
-
-    return ArtistSearchResponse(q=term, country=base_country, items=items)
-
-
-@router.get("/search/artists/id/{artist_id}", response_model=ArtistLookupResponse)
-async def artist_by_id(
-    artist_id: str,
-    include_page: bool = Query(default=True),
-    slug: str | None = Query(default=None, min_length=0, max_length=80),
-):
-    sid = str(artist_id or "").strip()
-    if not sid.isdigit():
-        raise HTTPException(status_code=400, detail="artist_id must be numeric")
-
-    base_country = str(getattr(Config, "SHAZAM_COUNTRY", "IN") or "IN").strip().upper()
-    if len(base_country) not in (2, 3):
-        base_country = "IN"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://www.shazam.com/",
-    }
-    timeout = httpx.Timeout(15.0, connect=10.0)
-
-    href = f"/v1/catalog/{base_country.lower()}/artists/{sid}"
-    detail: dict[str, Any] = {"id": sid, "href": href}
-    try:
-        async with httpx.AsyncClient(headers={**headers, "Accept": "application/json"}, timeout=timeout, follow_redirects=True) as client:
-            try:
-                detail_url = f"https://www.shazam.com/services/amapi{href}"
-                detail_json = await _fetch_shazam_json(client, detail_url)
-                detail2 = _parse_shazam_artist_detail_json(detail_json)
-                if isinstance(detail2, dict) and detail2:
-                    detail.update({k: v for k, v in detail2.items() if v is not None})
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    html_meta: dict[str, Any] = {}
-    if include_page:
+    followed_ids: set[str] = set()
+    if user_id is not None:
         try:
-            raw_slug = (slug or "").strip()
-            if raw_slug:
-                page_slug = _shazam_artist_slug(raw_slug)
-            else:
-                page_slug = "x"
-            page_url = f"https://www.shazam.com/artist/{page_slug}/{sid}"
-            async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
-                html = await _fetch_shazam_html(client, page_url)
-            html_meta = _parse_shazam_artist_html(html)
-        except Exception:
-            html_meta = {}
-
-    name = _pick_first_str(detail.get("name")) or _pick_first_str(html_meta.get("name"))
-    if not name:
-        name = sid
-
-    genres = detail.get("genres") if isinstance(detail.get("genres"), list) else None
-    if not genres and isinstance(html_meta.get("genres"), list):
-        genres = html_meta.get("genres")
-
-    description = _pick_first_str(detail.get("description")) or _pick_first_str(html_meta.get("description"))
-    hometown = _pick_first_str(detail.get("hometown")) or _pick_first_str(html_meta.get("hometown"))
-    born = _pick_first_str(detail.get("born")) or _pick_first_str(html_meta.get("born"))
-    formed = _pick_first_str(detail.get("formed")) or _pick_first_str(html_meta.get("formed"))
-    if not formed:
-        formed = _infer_formed(description)
-
-    image_url = _pick_first_str(detail.get("image_url")) or _pick_first_str(html_meta.get("image_url"))
-
-    members = html_meta.get("members") if isinstance(html_meta.get("members"), list) else None
-    if include_page and members:
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=True) as client:
-                out_members: list[dict[str, str]] = []
-                for m in members[:12]:
-                    if not isinstance(m, dict):
-                        continue
-                    href2 = m.get("href")
-                    if not isinstance(href2, str) or not href2.strip():
-                        out_members.append(m)
-                        continue
-                    if isinstance(m.get("image_url"), str) and m.get("image_url", "").strip():
-                        resized = _resize_apple_image_url(m.get("image_url"), size=618)
-                        if resized:
-                            m = {**m, "image_url": resized}
-                        out_members.append(m)
-                        continue
-                    url2 = href2.strip()
-                    if url2.startswith("/"):
-                        url2 = "https://www.shazam.com" + url2
-                    try:
-                        html2 = await _fetch_shazam_html(client, url2)
-                        meta2 = _parse_shazam_artist_html(html2)
-                        img2 = _pick_first_str(meta2.get("image_url"))
-                        if img2:
-                            m = {**m, "image_url": _resize_apple_image_url(img2, size=618) or _clean_url(img2)}
-                    except Exception:
-                        pass
-                    out_members.append(m)
-                members = out_members
+            fav_col = db_handler.get_collection("user_favourite_artists").collection
+            async for fdoc in fav_col.find({"user_id": int(user_id)}, {"_id": 0, "artist_id": 1}):
+                aid = fdoc.get("artist_id")
+                if aid:
+                    followed_ids.add(aid)
         except Exception:
             pass
 
-    item = ArtistSearchItem(
-        id=sid,
-        href=href,
-        name=str(name),
-        image_url=_resize_apple_image_url(image_url, size=618) if image_url else None,
-        video_poster_url=_clean_url(_pick_first_str(html_meta.get("video_poster_url"))) if html_meta.get("video_poster_url") else None,
-        video_hls_url=_clean_url(_pick_first_str(html_meta.get("video_hls_url"))) if html_meta.get("video_hls_url") else None,
-        video_mp4_url=_clean_url(_pick_first_str(html_meta.get("video_mp4_url")))
-        if html_meta.get("video_mp4_url")
-        else _itunes_mp4_from_m3u8(_pick_first_str(html_meta.get("video_hls_url"))),
-        genres=[str(x) for x in genres] if isinstance(genres, list) else None,
-        description=description,
-        hometown=hometown,
-        born=born,
-        formed=formed,
-        links=html_meta.get("links") if isinstance(html_meta.get("links"), list) else None,
-        members=members,
-        member_of=html_meta.get("member_of") if isinstance(html_meta.get("member_of"), list) else None,
-        source="shazam",
-    )
+    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as http_client:
+        items: list[dict] = []
+        async for doc in cursor:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            c_url = doc.get("cover_url")
+            if isinstance(c_url, str) and c_url.strip():
+                doc["cover_url"] = _clean_url(c_url)
+            else:
+                name = doc.get("name") or ""
+                if name:
+                    av = await _fetch_artist_avatar(http_client, name)
+                    if av:
+                        doc["cover_url"] = av
+                        try:
+                            await artists_col.update_one({"_id": doc["_id"]}, {"$set": {"cover_url": av}})
+                        except Exception:
+                            pass
+            doc["is_following"] = doc.get("_id") in followed_ids
+            items.append(doc)
 
-    return ArtistLookupResponse(id=sid, country=base_country, item=item)
+    return {
+        "ok": True,
+        "page": int(page),
+        "per_page": int(limit),
+        "total": int(total),
+        "query": query_str,
+        "items": items,
+    }
 
 @router.get("/tracks/shuffle", response_model=BrowseResponse)
+@router.get("/tracks/random", response_model=BrowseResponse)
+@router.get("/library/shuffle", response_model=BrowseResponse)
+@router.get("/api/v1/library/shuffle", response_model=BrowseResponse)
 async def track_shuffle(
     limit: int = Query(default=100, ge=1, le=200),
     seed: int | None = Query(default=None),
     channel_id: int | None = Query(default=None),
+    liked: bool | None = Query(default=None),
+    genre: str | None = Query(default=None),
+    artist: str | None = Query(default=None),
+    source: str | None = Query(default=None),
+    lossless: bool | None = Query(default=None),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
-    return await random_tracks(limit=int(limit), seed=seed, channel_id=channel_id)
+    return await random_tracks(
+        limit=int(limit),
+        seed=seed,
+        channel_id=channel_id,
+        user_id=user_id,
+        liked=liked,
+        genre=genre,
+        artist=artist,
+        source=source,
+        lossless=lossless,
+    )
+
+
+@router.get("/history", response_model=BrowseResponse)
+async def user_history_direct(
+    limit: int = Query(default=100, ge=1, le=200),
+    user_id: int = Depends(require_user_id),
+):
+    from Api.routers.playlists import get_user_history
+    return await get_user_history(limit=limit, user_id=user_id)
 
 @router.get("/playlists/available", response_model=AvailablePlaylistsResponse)
 async def available_playlists(request: Request):
@@ -1201,7 +1123,6 @@ async def available_playlists(request: Request):
 
     daily_defs = [
         ("random", "Daily Mix"),
-        ("top-played", "Top Played"),
         ("trending", "Trending Today"),
         ("rediscover", "Rediscover"),
         ("late-night", "Late Night Mix"),
@@ -1214,35 +1135,17 @@ async def available_playlists(request: Request):
         info = await get_daily_playlist_thumbnail_info(key=key, date=today, channel_id=None, limit=4)
         url = info.get("cover_url") if isinstance(info, dict) else None
         normal = info.get("normal_thumbnail") if isinstance(info, dict) else None
+        thumbs = info.get("thumbnails") if isinstance(info, dict) and isinstance(info.get("thumbnails"), list) else []
         items.append(
             AvailablePlaylistItem(
                 id=f"daily:{key}",
                 kind="daily",
                 name=name,
+                thumbnails=[str(x) for x in thumbs if isinstance(x, str)],
                 thumbnail_url=url,
                 normal_thumbnail=normal,
                 endpoint=f"/daily-playlist/{key}",
                 requires_auth=False,
-            )
-        )
-
-    user_id = _optional_user_id(request)
-    if user_id is not None:
-        ucol = db_handler.userplayback_collection.collection
-        if not await ucol.find_one({"user_id": int(user_id)}, {"_id": 1}):
-            return AvailablePlaylistsResponse(items=items)
-        info = await get_user_top_played_thumbnail_info(user_id=int(user_id), limit=4)
-        url = info.get("cover_url") if isinstance(info, dict) else None
-        normal = info.get("normal_thumbnail") if isinstance(info, dict) else None
-        items.append(
-            AvailablePlaylistItem(
-                id="me:top-played",
-                kind="me_top_played",
-                name="Top Played",
-                thumbnail_url=url,
-                normal_thumbnail=normal,
-                endpoint="/me/top-played",
-                requires_auth=True,
             )
         )
 
@@ -1253,6 +1156,7 @@ async def daily_playlist(
     key: str,
     limit: int = Query(default=75, ge=1, le=75),
     channel_id: int | None = Query(default=None),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
     key = (key or "").strip().lower()
     if not key:
@@ -1275,12 +1179,12 @@ async def daily_playlist(
         "surprise-me",
     }:
         raise HTTPException(status_code=404, detail="unknown daily playlist")
-    return await get_daily_playlist(key=key, date=None, channel_id=channel_id, limit=int(limit))
+    return await get_daily_playlist(key=key, date=None, channel_id=channel_id, limit=int(limit), user_id=user_id)
 
 
 @router.get("/tracks/{track_id}", response_model=TrackResponse)
-async def track_details(track_id: str):
-    doc = await get_track_by_id(track_id)
+async def track_details(track_id: str, user_id: Optional[int] = Depends(get_optional_user_id)):
+    doc = await get_track_by_id(track_id, user_id=user_id)
     if not doc:
         raise HTTPException(status_code=404, detail="track not found")
     return doc
@@ -1323,7 +1227,7 @@ async def list_albums(
 
 
 @router.get("/albums/{album_id}")
-async def album_details(album_id: str):
+async def album_details(album_id: str, user_id: Optional[int] = Depends(get_optional_user_id)):
     aid = (album_id or "").strip()
     if not aid:
         raise HTTPException(status_code=400, detail="album_id is required")
@@ -1365,6 +1269,7 @@ async def album_details(album_id: str):
             doc["spotify"] = spotify
         tracks.append(doc)
 
+    await attach_liked_to_dicts(tracks, user_id)
     album["_id"] = str(album.get("_id"))
     if isinstance(album.get("cover_url"), str):
         album["cover_url"] = _clean_url(album.get("cover_url"))
@@ -1378,6 +1283,7 @@ async def album_tracks(
     album_id: str,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
     aid = (album_id or "").strip()
     if not aid:
@@ -1428,6 +1334,7 @@ async def album_tracks(
             doc["spotify"] = spotify
         items.append(doc)
 
+    await attach_liked_to_dicts(items, user_id)
     return {"ok": True, "page": int(page), "per_page": int(limit), "total": int(total), "items": items}
 
 
@@ -1436,6 +1343,7 @@ async def list_artists(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     refresh: bool = Query(default=False),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
     artists_col = db_handler.get_collection("artists").collection
     try:
@@ -1450,6 +1358,17 @@ async def list_artists(
         except Exception:
             existing = 0
 
+    followed_ids: set[str] = set()
+    if user_id is not None:
+        try:
+            fav_col = db_handler.get_collection("user_favourite_artists").collection
+            async for fdoc in fav_col.find({"user_id": int(user_id)}, {"_id": 0, "artist_id": 1}):
+                aid = fdoc.get("artist_id")
+                if aid:
+                    followed_ids.add(aid)
+        except Exception:
+            pass
+
     skip = (int(page) - 1) * int(limit)
     cursor = (
         artists_col.find({}, {"match_artist": 0})
@@ -1458,17 +1377,33 @@ async def list_artists(
         .limit(int(limit))
     )
     items: list[dict] = []
-    async for doc in cursor:
-        if "_id" in doc:
-            doc["_id"] = str(doc["_id"])
-        if isinstance(doc.get("cover_url"), str):
-            doc["cover_url"] = _clean_url(doc.get("cover_url"))
-        items.append(doc)
+    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0"}) as http_client:
+        async for doc in cursor:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            c_url = doc.get("cover_url")
+            has_good_cover = isinstance(c_url, str) and c_url.strip() and not _is_default_deezer_avatar(c_url)
+            if has_good_cover:
+                doc["cover_url"] = _clean_url(c_url)
+            else:
+                name = doc.get("name") or ""
+                if name:
+                    av = await _fetch_artist_avatar(http_client, name)
+                    if av:
+                        doc["cover_url"] = av
+                        try:
+                            await artists_col.update_one({"_id": doc["_id"]}, {"$set": {"cover_url": av}})
+                        except Exception:
+                            pass
+                    elif isinstance(c_url, str) and c_url.strip():
+                        doc["cover_url"] = _clean_url(c_url)
+            doc["is_following"] = doc.get("_id") in followed_ids
+            items.append(doc)
     return {"ok": True, "page": int(page), "per_page": int(limit), "total": int(existing), "items": items}
 
 
 @router.get("/artists/{artist_id}")
-async def artist_details(artist_id: str):
+async def artist_details(artist_id: str, user_id: Optional[int] = Depends(get_optional_user_id)):
     aid = (artist_id or "").strip()
     if not aid:
         raise HTTPException(status_code=400, detail="artist_id is required")
@@ -1549,6 +1484,10 @@ async def artist_details(artist_id: str):
     popular_tracks = sorted(tracks, key=_popular_key, reverse=True)[:10]
     singles = [t for t in tracks if not (t.get("audio") or {}).get("album")][:20]
 
+    await attach_liked_to_dicts(tracks, user_id)
+    await attach_liked_to_dicts(popular_tracks, user_id)
+    await attach_liked_to_dicts(singles, user_id)
+
     albums_col = db_handler.get_collection("albums").collection
     releases: list[dict] = []
     try:
@@ -1582,6 +1521,7 @@ async def artist_tracks(
     artist_id: str,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
+    user_id: Optional[int] = Depends(get_optional_user_id),
 ):
     aid = (artist_id or "").strip()
     if not aid:
@@ -1666,6 +1606,7 @@ async def artist_tracks(
             doc["spotify"] = spotify
         items.append(doc)
 
+    await attach_liked_to_dicts(items, user_id)
     return {"ok": True, "page": int(page), "per_page": int(limit), "total": int(total), "items": items}
 
 

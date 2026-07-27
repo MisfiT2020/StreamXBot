@@ -16,6 +16,7 @@ class BrowseItem(BaseModel):
     spotify_url: str | None = None
     cover_url: str | None = None
     updated_at: float | None = None
+    liked: bool = False
 
 class BrowseResponse(BaseModel):
     page: int

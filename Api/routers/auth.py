@@ -23,6 +23,7 @@ from Api.schemas.auth import (
 )
 from Api.utils.auth import (
     create_auth_token,
+    get_optional_user_id,
     require_admin_user_id,
     require_user_id,
     verify_auth_token,
@@ -424,7 +425,10 @@ async def set_credentials(payload: SetCredentialsRequest, user_id: int = Depends
 
 
 @router.get("/me")
-async def auth_me(user_id: int = Depends(require_user_id)):
+async def auth_me(user_id: int | None = Depends(get_optional_user_id)):
+    if user_id is None:
+        return {"ok": True, "guest": True, "user": None}
+
     col = db_handler.get_collection("users").collection
     doc = await col.find_one(
         {"_id": int(user_id)},

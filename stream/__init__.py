@@ -3,11 +3,13 @@ from os import environ
 import time
 import datetime
 
+_pyrogram_error = None
 try:
     from pyrogram import Client, enums
-except Exception:
+except Exception as e:
     Client = None
     enums = None
+    _pyrogram_error = e
 from .helpers.logger import LOGGER
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -31,7 +33,7 @@ bot = None
 scheduler = None
 if not _only_api:
     if Client is None or enums is None:
-        raise SystemExit("pyrogram is required when ONLY_API is False")
+        raise SystemExit(f"pyrogram is required when ONLY_API is False (import error: {_pyrogram_error})")
     bot = Client(
         name="Stream",
         api_id=Config.API_ID,
@@ -77,7 +79,6 @@ async def refresh_daily_playlists(date: str | None = None) -> None:
         date = datetime.datetime.utcnow().date().isoformat()
 
     from Api.services.track_service import generate_daily_playlist
-    from Api.services.genColor import ensure_daily_playlist_cover
 
     keys = ["random", "top-played"]
     channels: list[int | None] = [None]

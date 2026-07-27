@@ -115,11 +115,11 @@ def verify_auth_token(token: str) -> dict:
 
 from typing import Optional
 
-def require_user_id(
+def get_optional_user_id(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
-) -> Optional[int]:
+) -> int | None:
     token = ""
     if credentials is not None and (credentials.credentials or "").strip():
         token = (credentials.credentials or "").strip()
@@ -131,21 +131,55 @@ def require_user_id(
             token = (request.cookies.get("token") or "").strip()
     
     if not token:
-        # If no token is provided, treat as guest (None)
         return None
+        
+    try:
+        payload = verify_auth_token(token)
+    except HTTPException:
+        return None
+
+    uid = payload.get("uid")
+    if isinstance(uid, str) and uid == "__api__":
+        return None
+    try:
+        val = int(uid)
+        return val if val > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def require_user_id(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
+) -> int:
+    token = ""
+    if credentials is not None and (credentials.credentials or "").strip():
+        token = (credentials.credentials or "").strip()
+    elif (x_auth_token or "").strip():
+        token = (x_auth_token or "").strip()
+    else:
+        token = (request.cookies.get("auth_token") or "").strip()
+        if not token:
+            token = (request.cookies.get("token") or "").strip()
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="user login required")
         
     payload = verify_auth_token(token)
     uid = payload.get("uid")
     if isinstance(uid, str):
-        if uid == "__api__":
-            return None
         raise HTTPException(status_code=401, detail="user login required")
-    return int(uid)
+    try:
+        uid_int = int(uid)
+        if uid_int <= 0:
+            raise HTTPException(status_code=401, detail="user login required")
+        return uid_int
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="user login required")
 
 
-def require_admin_user_id(user_id: Optional[int] = Depends(require_user_id)) -> int:
-    if user_id is None:
-        raise HTTPException(status_code=403, detail="admin only")
+def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
     uid = int(user_id)
     owners = getattr(Config, "OWNER_ID", None) or []
     sudos = getattr(Config, "SUDO_USERS", None) or []

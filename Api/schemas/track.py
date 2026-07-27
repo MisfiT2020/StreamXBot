@@ -14,4 +14,5 @@ class TrackResponse(BaseModel):
     content_hash: str | None = None
     fingerprint: str | None = None
     updated_at: float | None = None
+    liked: bool = False
 

@@ -24,7 +24,6 @@ class Config:
         "MONGO_URI",
         "MULTI_CLIENTS",
         "ONLY_API",
-        "CLOUDINARY_API_SECRET",
         "CORS_ORIGINS",
         "FIREBASE_CREDENTIALS",
     }
@@ -42,13 +41,12 @@ class Config:
     FIREBASE_CREDENTIALS = ""
     COLLEGE = True
     TEXT_COLOR = "#FFFFFF"
-    CLOUDINARY_CLOUD_NAME = ""
-    CLOUDINARY_API_KEY = ""
-    CLOUDINARY_API_SECRET = ""
     CORS_ORIGIN = ""
     COOKIE_SECURE = ""
     COOKIE_SAMESITE = ""
     USERBOT_INDEX = ""
+    # 0: index only CHANNEL_ID. 1: index audio from any chat the bot receives.
+    FILTER_MODE = 0
     CHANNEL_ID = 0
     DUMP_CHANNEL_ID = 0
     LRCLIB = False

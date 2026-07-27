@@ -50,14 +50,19 @@ export const LatestSongsPage = () => {
         if (cancelled) return
         setLatestLoading(true)
       })
-      api
-        .browseTracks(1)
-        .then((data) => {
+      Promise.all([
+        api.browseTracks(1),
+        api.browseTracks(2),
+        api.browseTracks(3),
+        api.browseTracks(4)
+      ])
+        .then((results) => {
           if (cancelled) return
-          const items = Array.isArray(data.items) ? data.items : []
-          setSongs(items)
+          const allItems = results.flatMap((data) => (Array.isArray(data.items) ? data.items : []))
+          setSongs(allItems)
           setLatestLoading(false)
-          setHasMore(items.length >= 20)
+          setHasMore(allItems.length >= 80)
+          setCurrentPage(5)
         })
         .catch((err) => {
           void err
@@ -113,16 +118,21 @@ export const LatestSongsPage = () => {
       setLatestLoading(!hasCachedList)
     })
 
-    api
-      .browseTracks(1)
-      .then((data) => {
+    Promise.all([
+      api.browseTracks(1),
+      api.browseTracks(2),
+      api.browseTracks(3),
+      api.browseTracks(4)
+    ])
+      .then((results) => {
         if (cancelled) return
-        const items = Array.isArray(data.items) ? data.items : []
-        setSongs(items)
+        const allItems = results.flatMap((data) => (Array.isArray(data.items) ? data.items : []))
+        setSongs(allItems)
         setLatestLoading(false)
-        setHasMore(items.length >= 20)
+        setHasMore(allItems.length >= 80)
+        setCurrentPage(5)
         try {
-          localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), items }))
+          localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), items: allItems }))
         } catch (err) {
           void err
         }

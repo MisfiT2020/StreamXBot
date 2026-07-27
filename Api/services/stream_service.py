@@ -33,6 +33,7 @@ _PLAY_PROGRESS_TTL_SEC = 1800.0
 _PLAY_PROGRESS_MAX = 5000
 _PLAY_PROGRESS_UPDATE_EVERY_BYTES = 512 * 1024
 _PLAY_PROGRESS_LOCK = asyncio.Lock()
+_RECENTLY_RECORDED_HISTORY: dict[tuple[int, str], float] = {}
 
 LOG = LOGGER(__name__)
 
@@ -1120,6 +1121,20 @@ async def _direct_stream(
         await release_stream_client(client_user_id)
 
 
+async def record_user_history(user_id: int, track_id: str, played_at: float) -> None:
+    try:
+        col = db_handler.get_collection("userHistory").collection
+        doc = {
+            "user_id": int(user_id),
+            "track_id": str(track_id),
+            "played_at": float(played_at),
+        }
+        res = await col.insert_one(doc)
+        LOG.info(f"[userHistory] Inserted doc_id={res.inserted_id} for user_id={user_id} track_id={track_id}")
+    except Exception as e:
+        LOG.error(f"[userHistory] Failed to insert for user_id={user_id} track_id={track_id}: {e}", exc_info=True)
+
+
 async def stream_track(track_id: str, request: Request):
     if bool(getattr(Config, "ONLY_API", False)) or bot is None:
         raise HTTPException(status_code=503, detail="streaming disabled")
@@ -1178,6 +1193,25 @@ async def stream_track(track_id: str, request: Request):
     except Exception:
         bitrate_kbps = None
 
+    user_id: Optional[int] = None
+    token = request.query_params.get("token") or request.headers.get("X-Auth-Token")
+    if not token:
+        auth_hdr = request.headers.get("Authorization") or ""
+        if auth_hdr.startswith("Bearer "):
+            token = auth_hdr[7:].strip()
+    if token:
+        try:
+            payload = verify_auth_token(token)
+            if isinstance(payload, dict):
+                raw_uid = payload.get("uid") or payload.get("user_id")
+                if raw_uid is not None:
+                    try:
+                        user_id = int(raw_uid)
+                    except (ValueError, TypeError):
+                        user_id = None
+        except Exception:
+            user_id = None
+
     range_header = (
         request.headers.get("range") or request.headers.get("Range") or ""
     ).strip()
@@ -1185,6 +1219,14 @@ async def stream_track(track_id: str, request: Request):
 
     has_range = bool(range_header) and start_byte is not None
     from_bytes = int(start_byte or 0)
+
+    if user_id and (request.method or "").upper() in ("GET", "HEAD"):
+        now_ts = time.time()
+        cache_key = (int(user_id), str(track_id))
+        last_rec = _RECENTLY_RECORDED_HISTORY.get(cache_key, 0.0)
+        if now_ts - last_rec > 15.0:
+            _RECENTLY_RECORDED_HISTORY[cache_key] = now_ts
+            asyncio.create_task(record_user_history(user_id, track_id, now_ts))
 
     until_bytes: int | None = None
     if has_range:
@@ -1310,7 +1352,6 @@ async def stream_track(track_id: str, request: Request):
                 {
                     "$set": {
                         f"telegram.file_ids.{client_key}": file_id,
-                        "updated_at": time.time(),
                     }
                 },
             )
@@ -1507,7 +1548,6 @@ async def download_track(track_id: str, request: Request):
                 {
                     "$set": {
                         f"telegram.file_ids.{client_key}": file_id,
-                        "updated_at": time.time(),
                     }
                 },
             )

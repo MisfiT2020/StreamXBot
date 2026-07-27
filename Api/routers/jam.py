@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, WebSocket, WebSoc
 from pydantic import BaseModel, Field
 
 from Api.services.stream_service import warm_track_cached
-from Api.utils.auth import require_user_id, verify_auth_token
+from Api.utils.auth import get_optional_user_id, require_user_id, verify_auth_token
 from stream.database.MongoDb import db_handler
 from stream.helpers.logger import LOGGER
 
@@ -345,7 +345,7 @@ class JamSettingsUpdateRequest(BaseModel):
 @router.post("/create", response_model=JamJoinResponse)
 async def jam_create(
     payload: JamCreateRequest,
-    user_id: Optional[int] = Depends(require_user_id),
+    user_id: Optional[int] = Depends(get_optional_user_id),
     authorization: str | None = Header(default=None),
     x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
 ):

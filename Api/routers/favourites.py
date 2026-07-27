@@ -3,10 +3,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from Api.schemas.favourites import FavouriteCreate, FavouriteIdsResponse, FavouritesResponse, FavouriteItem
+from Api.schemas.favourites import ArtistFavouriteCreate, FavouriteCreate, FavouriteIdsResponse, FavouritesResponse, FavouriteItem
 from Api.schemas.browse import BrowseResponse
 from Api.services.track_service import get_track_by_id, get_tracks_by_ids, user_top_played_tracks
-from Api.utils.auth import require_user_id
+from Api.utils.auth import get_optional_user_id, require_user_id
 from stream.database.MongoDb import db_handler
 
 
@@ -81,7 +81,7 @@ async def list_favourites(
             if last_ts is None or float(ts) > float(last_ts):
                 last_ts = float(ts)
 
-    tracks = await get_tracks_by_ids([r["track_id"] for r in fav_rows])
+    tracks = await get_tracks_by_ids([r["track_id"] for r in fav_rows], user_id=user_id)
     by_id = {str(t.get("_id")): t for t in tracks if t.get("_id")}
     items: list[FavouriteItem] = []
     for r in fav_rows:
@@ -94,7 +94,7 @@ async def list_favourites(
 
 @router.get("/favourites/ids", response_model=FavouriteIdsResponse)
 async def list_favourite_ids(
-    user_id: Optional[int] = Depends(require_user_id),
+    user_id: Optional[int] = Depends(get_optional_user_id),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=200, ge=1, le=1000),
 ):
@@ -145,3 +145,77 @@ async def my_top_played(
     limit: int = Query(default=50, ge=1, le=100),
 ):
     return await user_top_played_tracks(user_id=int(user_id), page=int(page), per_page=int(limit))
+
+
+@router.post("/artists/favourites")
+@router.post("/artist/favorite")
+@router.post("/artists/favorite")
+async def add_artist_favourite(
+    payload: Optional[ArtistFavouriteCreate] = None,
+    artist_id: Optional[str] = Query(default=None),
+    id: Optional[str] = Query(default=None),
+    user_id: int = Depends(require_user_id),
+):
+    aid = None
+    if payload:
+        aid = payload.artist_id or payload.id or payload.artistId
+    if not aid:
+        aid = artist_id or id
+    aid = (aid or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="artist_id is required")
+
+    col = db_handler.get_collection("user_favourite_artists").collection
+    res = await col.update_one(
+        {"user_id": int(user_id), "artist_id": aid},
+        {
+            "$setOnInsert": {"created_at": time.time()},
+            "$set": {"user_id": int(user_id), "artist_id": aid, "updated_at": time.time()},
+        },
+        upsert=True,
+    )
+    if res.upserted_id is not None:
+        try:
+            await db_handler.get_collection("artists").collection.update_one(
+                {"_id": aid},
+                {"$inc": {"followers": 1}}
+            )
+        except Exception:
+            pass
+    return {"ok": True, "already_exists": res.upserted_id is None}
+
+
+@router.delete("/artists/favourites/{artist_id}")
+@router.delete("/artist/favorite/{artist_id}")
+@router.delete("/artists/favorite/{artist_id}")
+async def remove_artist_favourite(artist_id: str, user_id: int = Depends(require_user_id)):
+    aid = (artist_id or "").strip()
+    if not aid:
+        raise HTTPException(status_code=400, detail="artist_id is required")
+
+    col = db_handler.get_collection("user_favourite_artists").collection
+    res = await col.delete_one({"user_id": int(user_id), "artist_id": aid})
+    if getattr(res, "deleted_count", 0) > 0:
+        try:
+            await db_handler.get_collection("artists").collection.update_one(
+                {"_id": aid},
+                {"$inc": {"followers": -1}}
+            )
+        except Exception:
+            pass
+    return {"ok": True, "deleted": bool(getattr(res, "deleted_count", 0))}
+
+
+@router.get("/artists/favourites/ids")
+async def list_favourite_artist_ids(user_id: Optional[int] = Depends(get_optional_user_id)):
+    if user_id is None:
+        return {"ok": True, "ids": []}
+
+    col = db_handler.get_collection("user_favourite_artists").collection
+    cursor = col.find({"user_id": int(user_id)}, {"_id": 0, "artist_id": 1})
+    ids = []
+    async for doc in cursor:
+        aid = doc.get("artist_id")
+        if aid:
+            ids.append(aid)
+    return {"ok": True, "ids": ids}

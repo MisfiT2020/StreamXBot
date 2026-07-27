@@ -235,6 +235,7 @@ Use `sample_config.py` as the template for `config.py`.
 | `OWNER_ID` | Telegram owner ID |
 | `SECRET_KEY` | Session signing and Firebase credential decoding |
 | `CHANNEL_ID` | Main Telegram source channel |
+| `FILTER_MODE` | `0` indexes only `CHANNEL_ID`; `1` indexes media from any chat, group, or forum topic the bot can read |
 
 ### Common optional values
 
@@ -245,7 +246,6 @@ Use `sample_config.py` as the template for `config.py`.
 | `COOKIE_SECURE` | Secure cookie flag for HTTPS |
 | `COOKIE_SAMESITE` | Cross-site cookie policy |
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | Spotify metadata integration |
-| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Cover uploads and hosting |
 | `SESSION_STRING` | Optional userbot session |
 | `SOURCE_CHANNEL_IDS` | Additional Telegram source channels |
 | `DUMP_CHANNEL_ID` | Optional dump channel |

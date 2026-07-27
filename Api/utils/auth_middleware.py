@@ -115,7 +115,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         token = _extract_token(request)
+        is_optional = path.startswith("/artists") or path.startswith("/browse") or path.startswith("/search")
         if not token:
+            if is_optional:
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "missing auth token"},
@@ -123,12 +126,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         try:
             verify_auth_token(token)
-        except HTTPException as e:
-            return JSONResponse(
-                status_code=int(e.status_code),
-                content={"ok": False, "detail": str(e.detail)},
-            )
         except Exception:
+            if is_optional:
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "invalid auth token"},

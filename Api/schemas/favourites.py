@@ -7,6 +7,12 @@ class FavouriteCreate(BaseModel):
     track_id: str
 
 
+class ArtistFavouriteCreate(BaseModel):
+    artist_id: str | None = None
+    id: str | None = None
+    artistId: str | None = None
+
+
 class FavouriteItem(BaseModel):
     track: TrackResponse
     created_at: float | None = None

@@ -42,6 +42,7 @@ class AvailablePlaylistItem(BaseModel):
     id: str
     kind: str
     name: str
+    thumbnails: list[str] = []
     thumbnail_url: str | None = None
     normal_thumbnail: str | None = None
     endpoint: str

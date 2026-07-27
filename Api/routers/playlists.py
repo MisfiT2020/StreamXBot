@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from Api.schemas.browse import BrowseResponse
 from Api.schemas.playlists import (
     PlaylistCreate,
     PlaylistItem,
@@ -15,13 +16,42 @@ from Api.schemas.playlists import (
     UserAlbumItem,
     UserAlbumsResponse,
 )
-from Api.services.genColor import ensure_user_playlist_cover, ensure_user_playlist_normal_cover
-from Api.services.track_service import get_track_by_id, get_tracks_by_ids
-from Api.utils.auth import require_user_id
+from Api.services.playlist_cover_service import ensure_user_playlist_cover, ensure_user_playlist_normal_cover
+from Api.services.track_service import get_browse_items_by_ids, get_track_by_id, get_tracks_by_ids
+from Api.utils.auth import get_optional_user_id, require_user_id
 from stream.database.MongoDb import db_handler
 
 
 router = APIRouter(prefix="/me", tags=["me"])
+
+
+@router.get("/history", response_model=BrowseResponse)
+async def get_user_history(
+    limit: int = Query(default=100, ge=1, le=200),
+    user_id: int = Depends(require_user_id),
+):
+    hist_col = db_handler.get_collection("userHistory").collection
+    query = {"$or": [{"user_id": int(user_id)}, {"user_id": str(user_id)}]}
+    cursor = hist_col.find(query).sort([("played_at", -1)]).limit(limit * 2)
+
+    seen_track_ids: set[str] = set()
+    ordered_track_ids: list[str] = []
+    async for doc in cursor:
+        tid = str(doc.get("track_id") or "").strip()
+        if tid and tid not in seen_track_ids:
+            seen_track_ids.add(tid)
+            ordered_track_ids.append(tid)
+            if len(ordered_track_ids) >= limit:
+                break
+
+    if not ordered_track_ids:
+        return BrowseResponse(page=1, per_page=limit, total=0, items=[])
+
+    items = await get_browse_items_by_ids(ordered_track_ids, user_id=user_id)
+    item_map = {item.id: item for item in items}
+    ordered_items = [item_map[tid] for tid in ordered_track_ids if tid in item_map]
+
+    return BrowseResponse(page=1, per_page=limit, total=len(ordered_items), items=ordered_items)
 
 def _track_thumbnail_url(track: dict) -> str:
     spotify = track.get("spotify") if isinstance(track.get("spotify"), dict) else {}
@@ -48,11 +78,6 @@ def _playlist_thumbnails(*, cover_url: str | None, track_thumbnails: list[str], 
     out: list[str] = []
     seen: set[str] = set()
 
-    cover = (cover_url or "").strip()
-    if cover:
-        out.append(cover)
-        seen.add(cover)
-
     for u in track_thumbnails:
         if len(out) >= int(limit):
             break
@@ -61,6 +86,11 @@ def _playlist_thumbnails(*, cover_url: str | None, track_thumbnails: list[str], 
             continue
         out.append(u2)
         seen.add(u2)
+
+    cover = (cover_url or "").strip()
+    if cover and cover not in seen and len(out) < int(limit):
+        out.append(cover)
+        seen.add(cover)
 
     return out
 
@@ -115,7 +145,7 @@ async def create_playlist(payload: PlaylistCreate, user_id: int = Depends(requir
 
 
 @router.get("/playlists", response_model=PlaylistsResponse)
-async def list_playlists(user_id: Optional[int] = Depends(require_user_id)):
+async def list_playlists(user_id: Optional[int] = Depends(get_optional_user_id)):
     if user_id is None:
         return PlaylistsResponse(items=[])
     col = db_handler.get_collection("user_playlists").collection
@@ -178,9 +208,6 @@ async def list_playlists(user_id: Optional[int] = Depends(require_user_id)):
             tracks_by_id = {str(t.get("_id") or t.get("id") or ""): t for t in tracks if isinstance(t, dict)}
         except Exception:
             tracks_by_id = {}
-
-    from Api.services.genColor import _collage_hash
-
     items: list[PlaylistItem] = []
     for it in raw_items:
         pid = str(it.get("playlist_id") or "")
@@ -199,37 +226,6 @@ async def list_playlists(user_id: Optional[int] = Depends(require_user_id)):
         cover_url = it.get("cover_url")
         cover_id = it.get("cover_id")
         normal_thumbnail = it.get("normal_thumbnail")
-        existing_hash = it.get("collage_hash")
-        
-        # Calculate expected hash
-        current_hash = _collage_hash(track_thumbs) if track_thumbs else None
-        
-        # Determine if we NEED to call ensure_...
-        # 1. No cover_url at all
-        # 2. Tracks were added (current_hash exists) but hash doesn't match DB (upgrade needed)
-        should_refresh = not cover_url or not normal_thumbnail or (current_hash and current_hash != existing_hash)
-
-        if should_refresh:
-            cover = await ensure_user_playlist_cover(playlist_id=pid, name=str(it.get("name") or ""), force=False, collage_urls=track_thumbs)
-            normal_cover = await ensure_user_playlist_normal_cover(playlist_id=pid, name=str(it.get("name") or ""), force=False, collage_urls=track_thumbs)
-            cover_url = cover.get("url") if isinstance(cover, dict) else cover_url
-            cover_id = cover.get("cover_id") if isinstance(cover, dict) else cover_id
-            normal_thumbnail = normal_cover.get("url") if isinstance(normal_cover, dict) else normal_thumbnail
-            
-            # Update playlist doc with new info and hash
-            try:
-                await db_handler.get_collection("user_playlists").collection.update_one(
-                    {"_id": pid, "user_id": int(user_id)},
-                    {"$set": {
-                        "cover_id": cover_id, 
-                        "cover_url": cover_url, 
-                        "normal_thumbnail": normal_thumbnail,
-                        "collage_hash": current_hash,
-                        "updated_at": time.time()
-                    }},
-                )
-            except Exception:
-                pass
 
         items.append(
             PlaylistItem(
@@ -289,14 +285,18 @@ async def delete_playlist(playlist_id: str, user_id: int = Depends(require_user_
     await db_handler.get_collection("playlist_tracks").collection.delete_many({"playlist_id": playlist_id})
     
     try:
-        from Api.services.genColor import delete_from_cloudinary, _file_key_for_id
-        # Delete main cover
+        import hashlib
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        covers_dir = os.path.join(root, "GenCovers")
         if doc.get("cover_id"):
-            fk = _file_key_for_id(doc["cover_id"])
-            delete_from_cloudinary(f"covers/{fk}")
-        # Delete normal cover
-        fk_normal = _file_key_for_id(f"user-playlist-normal:{playlist_id}")
-        delete_from_cloudinary(f"covers/{fk_normal}")
+            fk = hashlib.sha256(str(doc["cover_id"]).encode("utf-8")).hexdigest()[:16]
+            p = os.path.join(covers_dir, f"{fk}.png")
+            if os.path.exists(p):
+                os.remove(p)
+        fk_normal = hashlib.sha256(f"user-playlist-normal:{playlist_id}".encode("utf-8")).hexdigest()[:16]
+        pn = os.path.join(covers_dir, f"{fk_normal}.png")
+        if os.path.exists(pn):
+            os.remove(pn)
     except Exception:
         pass
         
@@ -410,7 +410,7 @@ async def list_playlist_tracks(
         if tid:
             track_ids.append(tid)
 
-    tracks = await get_tracks_by_ids(track_ids)
+    tracks = await get_tracks_by_ids(track_ids, user_id=user_id)
     return PlaylistTracksResponse(page=page, per_page=per_page, total=total, items=tracks)
 
 

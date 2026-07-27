@@ -464,6 +464,91 @@ async def deezer_cover_url(*, title: str, artist: str, album: str = "", year: in
     return None
 
 
+async def fetch_artist_avatar_info(artist_name: str) -> dict | None:
+    if not artist_name or not artist_name.strip():
+        return None
+
+    name = artist_name.strip()
+    slug = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
+    if not slug:
+        return None
+
+    try:
+        from stream.database.MongoDb import db_handler
+        col = db_handler.get_collection("artist_profiles").collection
+        existing = await col.find_one({"_id": slug})
+        if existing and existing.get("avatar_url"):
+            return existing
+    except Exception:
+        col = None
+
+    avatar_url = None
+    artist_id = None
+    link = None
+
+    try:
+        url = f"https://api.deezer.com/search/artist?q={quote(name)}"
+        async with ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    payload = await resp.json()
+                    data = (payload or {}).get("data") or []
+                    if data and isinstance(data[0], dict):
+                        first = data[0]
+                        avatar_url = first.get("picture_xl") or first.get("picture_big") or first.get("picture_medium")
+                        # Reject the default/empty Deezer avatar
+                        if avatar_url and "cdn-images.dzcdn.net/images/artist//" in avatar_url:
+                            avatar_url = None
+                        artist_id = first.get("id")
+                        link = first.get("link")
+    except Exception as e:
+        _dbg(f"[artist] deezer search failed for {name!r}: {e}")
+
+    if not avatar_url:
+        try:
+            itunes_url = f"https://itunes.apple.com/search?term={quote(name)}&entity=musicArtist&limit=1"
+            async with ClientSession() as session:
+                async with session.get(itunes_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        payload = await resp.json()
+                        results = (payload or {}).get("results") or []
+                        if results and isinstance(results[0], dict):
+                            first = results[0]
+                            artist_id = first.get("artistId")
+                            artist_link = first.get("artistLinkUrl")
+                            if artist_link:
+                                link = artist_link
+                                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                                async with session.get(artist_link, headers=headers, timeout=10) as page_resp:
+                                    if page_resp.status == 200:
+                                        html = await page_resp.text()
+                                        match = re.search(r'property="og:image"\s+content="([^"]+)"', html)
+                                        if not match:
+                                            match = re.search(r'content="([^"]+)"\s+property="og:image"', html)
+                                        if not match:
+                                            match = re.search(r'name="twitter:image"\s+content="([^"]+)"', html)
+                                        if match:
+                                            avatar_url = match.group(1)
+        except Exception as e:
+            _dbg(f"[artist] itunes search failed for {name!r}: {e}")
+
+    doc = {
+        "_id": slug,
+        "name": name,
+        "artist_id": artist_id,
+        "avatar_url": avatar_url,
+        "link": link,
+        "updated_at": time.time()
+    }
+    if avatar_url and col is not None:
+        try:
+            await col.update_one({"_id": slug}, {"$set": doc}, upsert=True)
+        except Exception:
+            pass
+
+    return doc
+
+
 async def find_best_cover_url(*, title: str, artist: str, album: str = "", year: int | None = None) -> tuple[str | None, str | None, str | None]:
     use_spotify = bool(getattr(Config, "SPOTIFY_COVER_SEARCH", False))
     use_fallbacks = bool(getattr(Config, "MUSIC_HOADER_SEARCH", False))

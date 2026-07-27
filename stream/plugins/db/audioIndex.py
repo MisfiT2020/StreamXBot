@@ -13,7 +13,7 @@ from pyrogram.types import Message
 from stream import bot, get_primary_client_user_id
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
-from stream.helpers.cover_search import find_best_cover_url, spotify_best_track
+from stream.helpers.cover_search import fetch_artist_avatar_info, find_best_cover_url, spotify_best_track
 from stream.helpers.dedup import metadata_fingerprint, sha256_prefix_file
 from stream.helpers.logger import LOGGER
 from stream.plugins.Analyzer.mediaHelper import (
@@ -660,6 +660,7 @@ async def _enrich_audio_doc(
     origin_cover_url = None
     cover_url = None
     cover_source = None
+    spotify: dict = {}
 
     spotify_enabled = bool(getattr(Config, "SPOTIFY_COVER_SEARCH", False))
     fallbacks_enabled = bool(getattr(Config, "MUSIC_HOADER_SEARCH", False))
@@ -705,7 +706,13 @@ async def _enrich_audio_doc(
             f"[cover] found track={title!r} artist={performer!r} src={cover_source!r} url={origin_cover_url!r}"
         )
 
-    spotify = {"cover_url": cover_url, "cover_source": cover_source}
+    if performer:
+        try:
+            art_info = await fetch_artist_avatar_info(performer)
+            if art_info and art_info.get("avatar_url"):
+                spotify["artist_avatar"] = art_info.get("avatar_url")
+        except Exception as e:
+            _dbg(f"[artist] failed to fetch artist avatar: {e}")
     if cover_source == "hoaders" and small_cover_url:
         spotify["cover_url"] = small_cover_url
         spotify["big_cover_url"] = cover_url
@@ -840,14 +847,16 @@ async def _enrich_audio_doc(
     if not existing or existing.get("cache_message_id") is None:
         ensure_source["cache_message_id"] = source_meta.get("cache_message_id")
 
+    now_ts = time.time()
     set_fields = {
         **{k: v for k, v in payload.items() if v is not None},
         **ensure_source,
         "enriched": False,
         "enriching": True,
+        "updated_at": now_ts,
     }
     try:
-        await col.update_one({"_id": target_id}, {"$set": set_fields}, upsert=True)
+        await col.update_one({"_id": target_id}, {"$set": set_fields, "$setOnInsert": {"created_at": now_ts}}, upsert=True)
     except DuplicateKeyError:
         dup = None
         if content_hash:
@@ -972,7 +981,23 @@ async def _enrich_audio_doc(
         )
 
 
-@bot.on_message(filters.chat(Config.CHANNEL_ID) & (filters.audio | filters.document))
+def _audio_ingest_filter():
+    """Build the source filter once at startup from ``FILTER_MODE``.
+
+    Mode 0 keeps the existing single-channel behavior.  Mode 1 intentionally
+    leaves the chat unrestricted, allowing the bot to index audio sent in any
+    channel, group, or forum topic it can receive messages from.
+    """
+    try:
+        filter_mode = int(getattr(Config, "FILTER_MODE", 0) or 0)
+    except (TypeError, ValueError):
+        filter_mode = 0
+
+    source_filter = filters.all if filter_mode == 1 else filters.chat(Config.CHANNEL_ID)
+    return source_filter & (filters.audio | filters.document)
+
+
+@bot.on_message(_audio_ingest_filter())
 async def channel_audio_filter(_, message: Message):
     try:
         key = f"{message.chat.id}:{message.id}"

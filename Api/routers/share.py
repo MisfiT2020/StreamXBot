@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException
 from Api.schemas.playlists import PlaylistShareResponse
 from Api.services.track_service import get_tracks_by_ids
-from Api.services.genColor import ensure_user_playlist_normal_cover
+from Api.utils.auth import get_optional_user_id
 from stream.database.MongoDb import db_handler
 
 router = APIRouter(prefix="/share", tags=["share"])
@@ -28,7 +29,7 @@ def _track_thumbnail_url(track: dict) -> str:
     return ""
 
 @router.get("/playlists/{playlist_id}", response_model=PlaylistShareResponse)
-async def get_shared_playlist(playlist_id: str):
+async def get_shared_playlist(playlist_id: str, user_id: Optional[int] = Depends(get_optional_user_id)):
     col = db_handler.get_collection("user_playlists").collection
     playlist = await col.find_one({"_id": playlist_id})
     if not playlist:
@@ -46,7 +47,7 @@ async def get_shared_playlist(playlist_id: str):
         if tid:
             track_ids.append(tid)
 
-    tracks = await get_tracks_by_ids(track_ids)
+    tracks = await get_tracks_by_ids(track_ids, user_id=user_id)
     
     track_thumbs = []
     for t in tracks:
@@ -57,20 +58,7 @@ async def get_shared_playlist(playlist_id: str):
                 break
 
     name = str(playlist.get("name") or "Playlist")
-    
-    # Resolve normal thumbnail cover
     normal_thumbnail = playlist.get("normal_thumbnail")
-    if not normal_thumbnail:
-        try:
-            res = await ensure_user_playlist_normal_cover(
-                playlist_id=playlist_id,
-                name=name,
-                force=False,
-                collage_urls=track_thumbs
-            )
-            normal_thumbnail = res.get("url")
-        except Exception:
-            pass
     
     return PlaylistShareResponse(
         playlist_id=str(playlist.get("_id")),

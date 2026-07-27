@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { platform } from '../platform.js'
-import { api, getAuthUserInfo } from '../services/api.js'
+import { api, getAuthUserInfo, getAuthToken, isApiToken } from '../services/api.js'
 import './ProfilePage.css'
 
 export const ProfilePage = () => {
@@ -120,13 +120,28 @@ export const ProfilePage = () => {
 
           <div className="profile-page-info">
             <div className="profile-page-name">
-              {authUserInfo?.first_name || 'Guest'}
+              {authUserInfo?.first_name || 'Guest Session'}
             </div>
             <div className="profile-page-userid">
-              User ID: {authUserInfo?.user_id || 'Not logged in'}
+              User ID: {authUserInfo?.user_id ? authUserInfo.user_id : 'Guest Access (No Account)'}
             </div>
           </div>
         </div>
+
+        {(!authUserInfo?.user_id || isApiToken(getAuthToken())) && (
+          <div className="profile-page-login" style={{ marginTop: '1rem', textAlign: 'center' }}>
+            <p style={{ marginBottom: '1rem', opacity: 0.8 }}>
+              You have guest access via owner password. Sign in to your personal account to save playlists and favorites.
+            </p>
+            <button
+              type="button"
+              className="profile-page-submit"
+              onClick={() => navigate('/login')}
+            >
+              Sign In to Account
+            </button>
+          </div>
+        )}
 
         {isTelegram && (
           <div className="profile-page-login">

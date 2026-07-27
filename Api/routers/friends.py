@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from bson import ObjectId
 from Api.schemas.friends import FriendRequestPayload, AcceptRequestPayload, InviteJamPayload, SettingsPayload, FcmTokenPayload
-from Api.utils.auth import require_user_id
+from Api.utils.auth import get_optional_user_id, require_user_id
 from Api.routers.presence import manager, broadcast_listening_to_friends
 from stream.database.MongoDb import db_handler
 
@@ -351,7 +351,7 @@ async def update_settings(payload: SettingsPayload, user_id: int = Depends(requi
 
 
 @router.get("/settings")
-async def get_settings(user_id: Optional[int] = Depends(require_user_id)):
+async def get_settings(user_id: Optional[int] = Depends(get_optional_user_id)):
     if user_id is None:
         raise HTTPException(status_code=401, detail="login required")
     users_col = db_handler.get_collection("users").collection

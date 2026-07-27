@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import time
 from typing import Any, Optional
+import inspect
 
 from pymongo import UpdateOne
 
@@ -36,7 +37,7 @@ def _normalize_spotify(doc: dict) -> None:
     spotify.pop("links", None)
 
 
-def _browse_item_from_doc(doc: dict) -> BrowseItem:
+def _browse_item_from_doc(doc: dict, liked_set: set[str] | None = None) -> BrowseItem:
     audio = doc.get("audio") or {}
     spotify = doc.get("spotify") or {}
     if isinstance(spotify, dict):
@@ -47,8 +48,11 @@ def _browse_item_from_doc(doc: dict) -> BrowseItem:
     if isinstance(t, str) and t:
         t = t.upper()
 
+    tid = _as_str_id(doc.get("_id"))
+    is_liked = bool(liked_set and tid in liked_set)
+
     return BrowseItem(
-        _id=_as_str_id(doc.get("_id")),
+        _id=tid,
         source_chat_id=doc.get("source_chat_id"),
         source_message_id=doc.get("source_message_id"),
         title=audio.get("title"),
@@ -61,7 +65,38 @@ def _browse_item_from_doc(doc: dict) -> BrowseItem:
         spotify_url=_clean_url(spotify.get("url") or spotify.get("spotify_url")),
         cover_url=_clean_url(spotify.get("cover_url")),
         updated_at=doc.get("updated_at"),
+        liked=is_liked,
     )
+
+
+async def get_user_liked_track_ids(user_id: int | None, track_ids: list[str]) -> set[str]:
+    if not user_id or user_id <= 0 or not track_ids:
+        return set()
+    clean_ids = [str(tid).strip() for tid in track_ids if str(tid).strip()]
+    if not clean_ids:
+        return set()
+    col = db_handler.get_collection("user_favourites").collection
+    cursor = col.find(
+        {"user_id": int(user_id), "track_id": {"$in": clean_ids}},
+        {"track_id": 1}
+    )
+    liked_set: set[str] = set()
+    async for doc in cursor:
+        tid = doc.get("track_id")
+        if isinstance(tid, str) and tid:
+            liked_set.add(tid)
+    return liked_set
+
+
+async def attach_liked_to_dicts(docs: list[dict], user_id: int | None) -> list[dict]:
+    if not docs:
+        return docs
+    tids = [str(d.get("_id") or d.get("id") or "").strip() for d in docs]
+    liked_set = await get_user_liked_track_ids(user_id, tids) if (user_id and user_id > 0) else set()
+    for d in docs:
+        tid = str(d.get("_id") or d.get("id") or "").strip()
+        d["liked"] = tid in liked_set
+    return docs
 
 
 def _search_pattern(q: str) -> str:
@@ -74,7 +109,7 @@ def _search_pattern(q: str) -> str:
     return ".*".join(re.escape(t) for t in tokens[:8])
 
 
-async def browse_tracks(channel_id: Optional[int], page: int, per_page: int) -> BrowseResponse:
+async def browse_tracks(channel_id: Optional[int], page: int, per_page: int, user_id: Optional[int] = None) -> BrowseResponse:
     per_page = int(per_page)
     if per_page <= 0:
         per_page = 20
@@ -88,7 +123,7 @@ async def browse_tracks(channel_id: Optional[int], page: int, per_page: int) -> 
     if channel_id is not None:
         query["source_chat_id"] = int(channel_id)
 
-    sort = [("source_message_id", -1)] if channel_id is not None else [("updated_at", -1)]
+    sort = [("source_message_id", -1)] if channel_id is not None else [("updated_at", -1), ("created_at", -1), ("_id", -1)]
     projection = {
         "_id": 1,
         "source_chat_id": 1,
@@ -101,14 +136,18 @@ async def browse_tracks(channel_id: Optional[int], page: int, per_page: int) -> 
     total = await col.count_documents(query)
     cursor = col.find(query, projection).sort(sort).skip(skip).limit(per_page)
 
+    docs = await cursor.to_list(length=per_page)
+    track_ids = [_as_str_id(d.get("_id")) for d in docs]
+    liked_set = await get_user_liked_track_ids(user_id, track_ids)
+
     items: list[BrowseItem] = []
-    async for doc in cursor:
-        items.append(_browse_item_from_doc(doc))
+    for doc in docs:
+        items.append(_browse_item_from_doc(doc, liked_set))
 
     return BrowseResponse(page=page, per_page=per_page, total=total, items=items)
 
 
-async def search_tracks(q: str, *, channel_id: Optional[int], page: int, per_page: int) -> BrowseResponse:
+async def search_tracks(q: str, *, channel_id: Optional[int], page: int, per_page: int, user_id: Optional[int] = None) -> BrowseResponse:
     per_page = int(per_page)
     if per_page <= 0:
         per_page = 20
@@ -148,13 +187,57 @@ async def search_tracks(q: str, *, channel_id: Optional[int], page: int, per_pag
     total = await col.count_documents(query)
     cursor = col.find(query, projection).sort([("updated_at", -1)]).skip(skip).limit(per_page)
 
+    docs = await cursor.to_list(length=per_page)
+    track_ids = [_as_str_id(d.get("_id")) for d in docs]
+    liked_set = await get_user_liked_track_ids(user_id, track_ids)
+
     items: list[BrowseItem] = []
-    async for doc in cursor:
-        items.append(_browse_item_from_doc(doc))
+    for doc in docs:
+        items.append(_browse_item_from_doc(doc, liked_set))
 
     return BrowseResponse(page=page, per_page=per_page, total=total, items=items)
 
-async def random_tracks(*, limit: int, seed: int | None = None, channel_id: Optional[int] = None) -> BrowseResponse:
+def _smart_interleave_artists(raw_docs: list[dict], rng: random.Random) -> list[dict]:
+    if len(raw_docs) <= 2:
+        return raw_docs
+
+    groups: dict[str, list[dict]] = {}
+    for doc in raw_docs:
+        audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
+        spotify = doc.get("spotify") if isinstance(doc.get("spotify"), dict) else {}
+        artist = str(audio.get("artist") or spotify.get("artist") or "unknown").strip().lower()
+        if artist not in groups:
+            groups[artist] = []
+        groups[artist].append(doc)
+
+    for artist_list in groups.values():
+        rng.shuffle(artist_list)
+
+    sorted_artists = sorted(groups.keys(), key=lambda k: len(groups[k]), reverse=True)
+
+    out: list[dict] = []
+    while sorted_artists:
+        for artist in list(sorted_artists):
+            if groups[artist]:
+                out.append(groups[artist].pop(0))
+            if not groups[artist]:
+                sorted_artists.remove(artist)
+
+    return out
+
+
+async def random_tracks(
+    *,
+    limit: int = 100,
+    seed: int | None = None,
+    channel_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    liked: Optional[bool] = None,
+    genre: Optional[str] = None,
+    artist: Optional[str] = None,
+    source: Optional[str] = None,
+    lossless: Optional[bool] = None,
+) -> BrowseResponse:
     limit = int(limit)
     if limit <= 0:
         limit = 50
@@ -164,6 +247,36 @@ async def random_tracks(*, limit: int, seed: int | None = None, channel_id: Opti
     query: dict[str, Any] = {"deleted": {"$ne": True}}
     if channel_id is not None:
         query["source_chat_id"] = int(channel_id)
+
+    if liked and user_id is not None:
+        fav_col = db_handler.get_collection("user_favourites").collection
+        fav_cursor = fav_col.find({"user_id": int(user_id)}, {"_id": 0, "track_id": 1})
+        fav_ids = [doc.get("track_id") async for doc in fav_cursor if doc.get("track_id")]
+        if fav_ids:
+            query["_id"] = {"$in": fav_ids}
+        else:
+            return BrowseResponse(page=1, per_page=limit, total=0, items=[])
+
+    if genre:
+        query["$or"] = [
+            {"audio.genre": {"$regex": re.escape(genre), "$options": "i"}},
+            {"spotify.genre": {"$regex": re.escape(genre), "$options": "i"}},
+        ]
+
+    if artist:
+        query["$or"] = [
+            {"audio.artist": {"$regex": re.escape(artist), "$options": "i"}},
+            {"spotify.artist": {"$regex": re.escape(artist), "$options": "i"}},
+        ]
+
+    if source:
+        if source.lower() == "telegram":
+            query["source_chat_id"] = {"$exists": True, "$ne": None}
+        elif source.lower() == "local":
+            query["is_local"] = True
+
+    if lossless:
+        query["audio.type"] = {"$in": ["FLAC", "ALAC", "WAV"]}
 
     col = get_audio_tracks_collection()
     total = await col.count_documents(query)
@@ -185,35 +298,35 @@ async def random_tracks(*, limit: int, seed: int | None = None, channel_id: Opti
         "updated_at": 1,
     }
 
-    items: list[BrowseItem] = []
-    seen: set[str] = set()
-    attempts = 0
+    sample_size = min(limit, total)
+    pipeline = [
+        {"$match": query},
+        {"$sample": {"size": sample_size}},
+        {"$project": projection},
+    ]
 
-    while len(items) < limit and attempts < 25:
-        attempts += 1
-        batch_limit = min(200, max(1, limit - len(items)))
-        max_skip = max(0, int(total) - int(batch_limit))
-        skip = int(rng.randint(0, max_skip)) if max_skip > 0 else 0
+    cursor = col.aggregate(pipeline)
+    while inspect.iscoroutine(cursor) or inspect.isawaitable(cursor):
+        cursor = await cursor
+    if hasattr(cursor, "to_list"):
+        to_list_fn = getattr(cursor, "to_list")
+        res = to_list_fn(length=sample_size)
+        if inspect.isawaitable(res) or inspect.iscoroutine(res):
+            raw_docs = await res
+        else:
+            raw_docs = list(res)
+    else:
+        raw_docs = [doc async for doc in cursor]
 
-        cursor = (
-            col.find(query, projection)
-            .sort([("_id", 1)])
-            .skip(skip)
-            .limit(batch_limit)
-        )
-        async for doc in cursor:
-            tid = _as_str_id(doc.get("_id"))
-            if not tid or tid in seen:
-                continue
-            seen.add(tid)
-            items.append(_browse_item_from_doc(doc))
-            if len(items) >= limit:
-                break
+    raw_docs = _smart_interleave_artists(raw_docs, rng)
 
-    rng.shuffle(items)
-    return BrowseResponse(page=1, per_page=limit, total=total, items=items[:limit])
+    track_ids = [_as_str_id(d.get("_id")) for d in raw_docs]
+    liked_set = await get_user_liked_track_ids(user_id, track_ids)
+    items = [_browse_item_from_doc(d, liked_set) for d in raw_docs]
 
-async def get_browse_items_by_ids(track_ids: list[str]) -> list[BrowseItem]:
+    return BrowseResponse(page=1, per_page=limit, total=total, items=items)
+
+async def get_browse_items_by_ids(track_ids: list[str], user_id: Optional[int] = None) -> list[BrowseItem]:
     ids = [str(x) for x in (track_ids or []) if str(x)]
     if not ids:
         return []
@@ -232,14 +345,37 @@ async def get_browse_items_by_ids(track_ids: list[str]) -> list[BrowseItem]:
     async for doc in cursor:
         docs.append(doc)
 
+    liked_set = await get_user_liked_track_ids(user_id, ids)
     by_id = {_as_str_id(d.get("_id")): d for d in docs if d.get("_id")}
     items: list[BrowseItem] = []
     for tid in ids:
         d = by_id.get(tid)
         if not d:
             continue
-        items.append(_browse_item_from_doc(d))
+        items.append(_browse_item_from_doc(d, liked_set))
     return items
+
+def _track_thumbnail_url(track: dict) -> str:
+    spotify = track.get("spotify") if isinstance(track.get("spotify"), dict) else {}
+    telegram = track.get("telegram") if isinstance(track.get("telegram"), dict) else {}
+    audio = track.get("audio") if isinstance(track.get("audio"), dict) else {}
+
+    candidates = [
+        spotify.get("cover_url"),
+        spotify.get("cover"),
+        spotify.get("thumbnail"),
+        telegram.get("thumb_url"),
+        telegram.get("thumbnail_url"),
+        telegram.get("thumb"),
+        telegram.get("thumbnail"),
+        audio.get("cover_url"),
+        audio.get("thumbnail"),
+    ]
+    for c in candidates:
+        if isinstance(c, str) and c.strip():
+            return c.strip()
+    return ""
+
 
 async def get_daily_playlist_thumbnail_info(
     *,
@@ -248,54 +384,48 @@ async def get_daily_playlist_thumbnail_info(
     channel_id: int | None,
     limit: int = 4,
 ) -> dict[str, object]:
-    from Api.services.genColor import ensure_daily_playlist_cover, ensure_daily_playlist_normal_cover
-
     k = _canon_daily_playlist_key(key)
     d = (date or "").strip()
 
-    track_ids = await generate_daily_playlist(key=k, date=d, channel_id=channel_id, limit=4)
-    items = await get_browse_items_by_ids(track_ids[:4])
-    collage_urls = [(it.cover_url or "").strip() for it in (items or []) if (it.cover_url or "").strip()]
-
-    cover = await ensure_daily_playlist_cover(key=k, date=d, channel_id=channel_id, force=False, collage_urls=collage_urls)
-    cover_url = cover.get("url") if isinstance(cover, dict) else None
-    normal = await ensure_daily_playlist_normal_cover(key=k, date=d, channel_id=channel_id, force=False, collage_urls=collage_urls)
-    normal_url = normal.get("url") if isinstance(normal, dict) else None
+    cover_url = None
+    thumbnails: list[str] = []
+    try:
+        track_ids = await generate_daily_playlist(key=k, date=d, channel_id=channel_id, limit=limit)
+        if track_ids:
+            tracks = await get_tracks_by_ids(track_ids[:limit])
+            for t in tracks:
+                if isinstance(t, dict):
+                    url = _track_thumbnail_url(t)
+                    if url and url not in thumbnails:
+                        thumbnails.append(url)
+            if thumbnails:
+                cover_url = thumbnails[0]
+    except Exception:
+        pass
 
     return {
         "key": k,
         "date": d,
         "channel_id": int(channel_id) if channel_id is not None else None,
         "cover_url": cover_url,
-        "normal_thumbnail": normal_url,
+        "normal_thumbnail": cover_url,
+        "thumbnails": thumbnails,
     }
 
 
 async def get_user_top_played_thumbnail_info(*, user_id: int, limit: int = 4) -> dict[str, object]:
-    from Api.services.genColor import ensure_user_top_played_cover, ensure_user_top_played_normal_cover
-
     uid = int(user_id)
     cache_col = db_handler.get_collection("user_top_played_cache").collection
-    cached = await cache_col.find_one({"_id": str(uid)}, {"_id": 0, "track_ids": 1, "cover_url": 1})
+    cached = await cache_col.find_one({"_id": str(uid)}, {"_id": 0, "track_ids": 1, "cover_url": 1, "normal_thumbnail": 1})
 
-    track_ids: list[str] = []
-    if isinstance(cached, dict) and isinstance(cached.get("track_ids"), list) and cached["track_ids"]:
-        track_ids = [str(x) for x in cached["track_ids"] if str(x)]
-    items = await get_browse_items_by_ids(track_ids[:4])
-    collage_urls = [(it.cover_url or "").strip() for it in (items or []) if (it.cover_url or "").strip()]
+    cover_url = cached.get("cover_url") if isinstance(cached, dict) else None
+    normal_url = cached.get("normal_thumbnail") if isinstance(cached, dict) else None
 
-    cover_url: str | None = None
-    if isinstance(cached, dict) and isinstance(cached.get("cover_url"), str) and cached["cover_url"].strip():
-        cover_url = cached["cover_url"].strip()
-    else:
-        cover = await ensure_user_top_played_cover(user_id=int(uid), force=False, collage_urls=collage_urls)
-        if isinstance(cover, dict) and isinstance(cover.get("url"), str) and cover["url"].strip():
-            cover_url = cover["url"].strip()
-
-    normal = await ensure_user_top_played_normal_cover(user_id=int(uid), force=False, collage_urls=collage_urls)
-    normal_url = normal.get("url") if isinstance(normal, dict) else None
-
-    return {"user_id": uid, "cover_url": cover_url, "normal_thumbnail": normal_url}
+    return {
+        "user_id": uid,
+        "cover_url": cover_url,
+        "normal_thumbnail": normal_url,
+    }
 
 def _daily_playlist_seed(*, key: str, date: str, channel_id: int | None) -> int:
     scope = str(int(channel_id)) if channel_id is not None else ""
@@ -601,7 +731,7 @@ async def generate_daily_playlist(*, key: str, date: str, channel_id: int | None
     return []
 
 
-async def get_daily_playlist(*, key: str, date: str | None = None, channel_id: int | None, limit: int) -> BrowseResponse:
+async def get_daily_playlist(*, key: str, date: str | None = None, channel_id: int | None, limit: int, user_id: Optional[int] = None) -> BrowseResponse:
     key = _canon_daily_playlist_key(key)
     if not date:
         date = datetime.datetime.utcnow().date().isoformat()
@@ -609,12 +739,8 @@ async def get_daily_playlist(*, key: str, date: str | None = None, channel_id: i
     track_ids = await generate_daily_playlist(key=key, date=str(date), channel_id=channel_id, limit=int(limit))
     if not track_ids:
         return BrowseResponse(page=1, per_page=int(limit), total=0, items=[])
-    items = await get_browse_items_by_ids(track_ids[: int(limit)])
-    from Api.services.genColor import ensure_daily_playlist_cover
-
-    cover = await ensure_daily_playlist_cover(key=key, date=str(date), channel_id=channel_id)
-    cover_url = cover.get("url") if isinstance(cover, dict) else None
-    return BrowseResponse(page=1, per_page=int(limit), total=len(items), items=items, cover_url=cover_url)
+    items = await get_browse_items_by_ids(track_ids[: int(limit)], user_id=user_id)
+    return BrowseResponse(page=1, per_page=int(limit), total=len(items), items=items, cover_url=None)
 
 async def refresh_daily_playlist_cache(
     *,
@@ -645,21 +771,6 @@ async def refresh_daily_playlist_cache(
 
     cover_url = None
     normal_thumbnail = None
-    if refresh_cover:
-        from Api.services.genColor import ensure_daily_playlist_cover, ensure_daily_playlist_normal_cover
-
-        cover = await ensure_daily_playlist_cover(key=k, date=d, channel_id=channel_id, force=True, collage_urls=collage_urls)
-        cover_url = cover.get("url") if isinstance(cover, dict) else None
-        normal = await ensure_daily_playlist_normal_cover(key=k, date=d, channel_id=channel_id, force=True, collage_urls=collage_urls)
-        normal_thumbnail = normal.get("url") if isinstance(normal, dict) else None
-    else:
-        try:
-            from Api.services.genColor import ensure_daily_playlist_normal_cover
-
-            normal = await ensure_daily_playlist_normal_cover(key=k, date=d, channel_id=channel_id, force=False, collage_urls=collage_urls)
-            normal_thumbnail = normal.get("url") if isinstance(normal, dict) else None
-        except Exception:
-            normal_thumbnail = None
 
     res = {
         "key": k,
@@ -752,14 +863,6 @@ async def refresh_user_top_played_cache(*, user_id: int, limit: int = 500, refre
     cover_id: str | None = None
     cover_url: str | None = None
     normal_thumbnail: str | None = None
-    if refresh_cover:
-        from Api.services.genColor import ensure_user_top_played_cover, ensure_user_top_played_normal_cover
-
-        cover = await ensure_user_top_played_cover(user_id=int(uid), force=bool(force_cover), collage_urls=collage_urls)
-        cover_id = cover.get("cover_id") if isinstance(cover, dict) else None
-        cover_url = cover.get("url") if isinstance(cover, dict) else None
-        normal = await ensure_user_top_played_normal_cover(user_id=int(uid), force=bool(force_cover), collage_urls=collage_urls)
-        normal_thumbnail = normal.get("url") if isinstance(normal, dict) else None
     await cache_col.update_one(
         {"_id": str(uid)},
         {"$set": {"user_id": int(uid), "track_ids": track_ids, "generated_at": now, "cover_id": cover_id, "cover_url": cover_url, "normal_thumbnail": normal_thumbnail}},
@@ -941,23 +1044,13 @@ async def user_top_played_tracks(*, user_id: int, page: int, per_page: int) -> B
     cover_url: str | None = None
     if isinstance(cached, dict) and isinstance(cached.get("cover_url"), str) and cached["cover_url"].strip():
         cover_url = cached["cover_url"].strip()
-    else:
-        from Api.services.genColor import ensure_user_top_played_cover
 
-        cover = await ensure_user_top_played_cover(user_id=int(user_id), force=False)
-        if isinstance(cover, dict) and isinstance(cover.get("url"), str) and cover["url"].strip():
-            cover_url = cover["url"].strip()
-            await cache_col.update_one(
-                {"_id": str(int(user_id))},
-                {"$set": {"cover_id": cover.get("cover_id"), "cover_url": cover_url, "user_id": int(user_id)}},
-                upsert=True,
-            )
     if isinstance(cached, dict) and isinstance(cached.get("track_ids"), list) and cached["track_ids"]:
         all_ids = [str(x) for x in cached["track_ids"] if str(x)]
         total = len(all_ids)
         start = int(skip)
         end = int(skip + per_page)
-        items = await get_browse_items_by_ids(all_ids[start:end])
+        items = await get_browse_items_by_ids(all_ids[start:end], user_id=user_id)
         return BrowseResponse(page=page, per_page=per_page, total=total, items=items, cover_url=cover_url)
 
     col = db_handler.userplayback_collection.collection
@@ -992,11 +1085,11 @@ async def user_top_played_tracks(*, user_id: int, page: int, per_page: int) -> B
         if tid:
             track_ids.append(tid)
 
-    items = await get_browse_items_by_ids(track_ids)
+    items = await get_browse_items_by_ids(track_ids, user_id=user_id)
     return BrowseResponse(page=page, per_page=per_page, total=total, items=items, cover_url=cover_url)
 
 
-async def get_track_by_id(track_id: str) -> dict | None:
+async def get_track_by_id(track_id: str, user_id: Optional[int] = None) -> dict | None:
     col = get_audio_tracks_collection()
     doc = await col.find_one({"_id": track_id, "deleted": {"$ne": True}})
     if not doc:
@@ -1058,9 +1151,11 @@ async def get_track_by_id(track_id: str) -> dict | None:
                     pass
             doc["spotify"] = spotify
     _normalize_spotify(doc)
+    liked_set = await get_user_liked_track_ids(user_id, [doc["_id"]]) if (user_id and user_id > 0) else set()
+    doc["liked"] = doc["_id"] in liked_set
     return doc
 
-async def get_tracks_by_ids(track_ids: list[str]) -> list[dict]:
+async def get_tracks_by_ids(track_ids: list[str], user_id: Optional[int] = None) -> list[dict]:
     ids = [str(x) for x in (track_ids or []) if str(x)]
     if not ids:
         return []
@@ -1085,6 +1180,13 @@ async def get_tracks_by_ids(track_ids: list[str]) -> list[dict]:
         _normalize_spotify(doc)
         docs.append(doc)
 
+    liked_set = await get_user_liked_track_ids(user_id, ids) if (user_id and user_id > 0) else set()
     by_id = {str(d.get("_id")): d for d in docs if d.get("_id")}
-    return [by_id[t] for t in ids if t in by_id]
+    res = []
+    for t in ids:
+        if t in by_id:
+            item = by_id[t]
+            item["liked"] = t in liked_set
+            res.append(item)
+    return res
 
