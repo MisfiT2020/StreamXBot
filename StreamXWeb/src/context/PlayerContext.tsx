@@ -51,7 +51,7 @@ const unlockAudioOnce = async () => {
     a.muted = true
     a.setAttribute('playsinline', 'true')
     a.setAttribute('webkit-playsinline', 'true')
-    a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA='
+    a.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAAAA=='
     await a.play()
     a.pause()
   } catch {
@@ -161,6 +161,16 @@ interface PlayerLibraryContextType {
 
 const PlayerPlaybackContext = createContext<PlayerPlaybackContextType | undefined>(undefined)
 const PlayerLibraryContext = createContext<PlayerLibraryContextType | undefined>(undefined)
+
+export const canBrowserPlayAlac = (): boolean => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return false
+  try {
+    const audio = document.createElement('audio')
+    return audio.canPlayType('audio/mp4; codecs="alac"') !== ''
+  } catch {
+    return false
+  }
+}
 
 export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   const [currentSong, setCurrentSong] = useState<Song | null>(null)
@@ -318,11 +328,27 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
   const inferPlaybackMime = useCallback((song: Song) => {
     const normalized = (song.type || '').toLowerCase().trim()
     if (normalized.includes('flac')) return 'audio/flac'
-    if (normalized.includes('alac')) return 'audio/mp4'
+    if (normalized.includes('alac')) {
+      return canBrowserPlayAlac() ? 'audio/mp4' : 'audio/flac'
+    }
     if (normalized.includes('mp3') || normalized.includes('mpeg')) return 'audio/mpeg'
     if (normalized.includes('aac') || normalized.includes('m4a') || normalized.includes('mp4')) return 'audio/mp4'
     return null
   }, [])
+
+  const getSongStreamUrl = useCallback(
+    (song: Song, token?: string | null) => {
+      const normalized = (song.type || '').toLowerCase().trim()
+      const isAlac = normalized.includes('alac')
+      const needsDecode = isAlac && !canBrowserPlayAlac()
+      const format = needsDecode ? 'flac' : undefined
+      if (token !== undefined) {
+        return resolveUrl(api.getStreamUrlWithToken(song._id, token, { format }))
+      }
+      return resolveUrl(api.streamTrack(song._id, { format }))
+    },
+    [resolveUrl],
+  )
 
   const shuffleSongs = useCallback((items: Song[]) => {
     if (items.length <= 1) return items
@@ -369,7 +395,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     const controller = new AbortController()
     aggressiveFetchAbortRef.current = controller
 
-    const streamUrl = resolveUrl(api.streamTrack(song._id))
+    const streamUrl = getSongStreamUrl(song)
     fetch(streamUrl, { signal: controller.signal, cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error(String(response.status))
@@ -391,7 +417,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
         if (previous && previous !== blobUrl) URL.revokeObjectURL(previous)
       })
       .catch(() => {})
-  }, [inferPlaybackMime, resolveUrl])
+  }, [getSongStreamUrl, inferPlaybackMime])
 
   const eagerFetchCurrentTrack = useCallback(() => {
     if (!currentSong) return
@@ -426,7 +452,8 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     shouldBePlayingRef.current = true
     const prefetchAudio = prefetchAudioRef.current
     if (prefetchAudio) {
-      prefetchAudio.src = ''
+      prefetchAudio.removeAttribute('src')
+      prefetchAudio.load()
     }
 
     setCurrentSong(song)
@@ -436,20 +463,73 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     const audio = audioRef.current
     if (!audio) return
 
-    const nextSrc = resolveUrl(api.streamTrack(song._id))
-    if (resolveUrl(audio.src) !== nextSrc) {
-      audio.src = nextSrc
+    const nextSrc = getSongStreamUrl(song)
+    const normalized = (song.type || '').toLowerCase().trim()
+    const isAlac = normalized.includes('alac')
+    const needsDecode = isAlac && !canBrowserPlayAlac()
+
+    if (needsDecode) {
+      api.warmTrack(song._id).then((res) => {
+        if (currentSongIdRef.current !== song._id) return
+        if (res?.ready) {
+          if (resolveUrl(audio.src) !== nextSrc) {
+            audio.src = nextSrc
+          }
+          try {
+            audio.currentTime = 0
+          } catch (err) {
+            void err
+          }
+          audio.play().catch(() => {})
+        } else {
+          const pollTimer = window.setInterval(async () => {
+            if (currentSongIdRef.current !== song._id || !shouldBePlayingRef.current) {
+              window.clearInterval(pollTimer)
+              return
+            }
+            const check = await api.warmTrack(song._id, { force: true })
+            if (check?.ready) {
+              window.clearInterval(pollTimer)
+              if (currentSongIdRef.current === song._id && shouldBePlayingRef.current) {
+                if (resolveUrl(audio.src) !== nextSrc) {
+                  audio.src = nextSrc
+                }
+                try {
+                  audio.currentTime = 0
+                } catch (err) {
+                  void err
+                }
+                audio.play().catch(() => {})
+              }
+            }
+          }, 1200)
+        }
+      }).catch(() => {
+        if (resolveUrl(audio.src) !== nextSrc) {
+          audio.src = nextSrc
+        }
+        try {
+          audio.currentTime = 0
+        } catch (err) {
+          void err
+        }
+        audio.play().catch(() => {})
+      })
+    } else {
+      if (resolveUrl(audio.src) !== nextSrc) {
+        audio.src = nextSrc
+      }
+      try {
+        audio.currentTime = 0
+      } catch (err) {
+        void err
+      }
+      audio.play().catch(() => {})
+      const profile = STREAM_PROFILES[streamModeRef.current]
+      api.warmTrack(song._id).catch(() => {})
+      if (profile.eagerFetchFull) eagerFetchSong(song)
     }
-    try {
-      audio.currentTime = 0
-    } catch (err) {
-      void err
-    }
-    audio.play().catch(() => {})
-    const profile = STREAM_PROFILES[streamModeRef.current]
-    api.warmTrack(song._id).catch(() => {})
-    if (profile.eagerFetchFull) eagerFetchSong(song)
-  }, [eagerFetchSong, resolveUrl, revokeAggressiveObjectUrl, revokeObjectUrl])
+  }, [eagerFetchSong, getSongStreamUrl, resolveUrl, revokeAggressiveObjectUrl, revokeObjectUrl])
 
   const setExternalNowPlaying = useCallback((song: Song | null) => {
     const isActive = Boolean(song)
@@ -476,8 +556,15 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
 
   const playSongFromList = useCallback(
     (song: Song, list: Song[]) => {
+      const up = buildUpcoming(song, list)
       setQueueHistory([])
-      setQueue(buildUpcoming(song, list))
+      setQueue(up)
+      for (const s of up.slice(0, 2)) {
+        const norm = (s.type || '').toLowerCase()
+        if (norm.includes('alac') && !canBrowserPlayAlac()) {
+          api.warmTrack(s._id).catch(() => {})
+        }
+      }
       startPlayback(song)
     },
     [buildUpcoming, startPlayback],
@@ -662,6 +749,10 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
       const profile = STREAM_PROFILES[streamModeRef.current]
       const nextSong = getNextSong()
       if (!nextSong) return
+      const nextNorm = (nextSong.type || '').toLowerCase()
+      if (nextNorm.includes('alac') && !canBrowserPlayAlac()) {
+        api.warmTrack(nextSong._id).catch(() => {})
+      }
       if (prefetchedNextSongIdRef.current === nextSong._id) return
       if (!profile.prefetchNextAudio) return
       if (!Number.isFinite(audio.duration) || audio.duration <= 0) return
@@ -671,7 +762,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
       if (!prefetchAudio) return
       prefetchedNextSongIdRef.current = nextSong._id
       prefetchAudio.preload = 'auto'
-      prefetchAudio.src = api.streamTrack(nextSong._id)
+      prefetchAudio.src = getSongStreamUrl(nextSong)
       prefetchAudio.load()
     }
     const handleEnded = () => {
@@ -731,7 +822,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
         if (now - saverSeekReloadAtRef.current < 360) return
         saverSeekReloadAtRef.current = now
 
-        const streamUrl = resolveUrl(api.streamTrack(song._id))
+        const streamUrl = getSongStreamUrl(song)
         const nextSrc = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}saver_seek=${encodeURIComponent(
           String(Math.floor(seekTo * 1000)),
         )}&ts=${encodeURIComponent(String(Date.now()))}`
@@ -810,7 +901,8 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     prefetchAudioRef.current = audio
     return () => {
       prefetchedNextSongIdRef.current = null
-      audio.src = ''
+      audio.removeAttribute('src')
+      audio.load()
       prefetchAudioRef.current = null
     }
   }, [])
@@ -840,7 +932,10 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     if (STREAM_PROFILES[streamMode].prefetchNextAudio) return
     prefetchedNextSongIdRef.current = null
     const prefetchAudio = prefetchAudioRef.current
-    if (prefetchAudio) prefetchAudio.src = ''
+    if (prefetchAudio) {
+      prefetchAudio.removeAttribute('src')
+      prefetchAudio.load()
+    }
   }, [streamMode])
 
   useEffect(() => {
@@ -869,7 +964,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
       if (cookieEnabled && token && authFallbackAttemptSongIdRef.current !== song._id) {
         authFallbackAttemptSongIdRef.current = song._id
         setAuthCookieEnabled(false)
-        const nextSrc = resolveUrl(api.getStreamUrlWithToken(song._id, token))
+        const nextSrc = getSongStreamUrl(song, token)
         audio.src = nextSrc
         audio.currentTime = 0
         audio.load()
@@ -889,7 +984,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
       const controller = new AbortController()
       fallbackAbortRef.current = controller
 
-      fetch(api.streamTrack(song._id), { signal: controller.signal })
+      fetch(getSongStreamUrl(song), { signal: controller.signal })
         .then(async (response) => {
           if (!response.ok) throw new Error(String(response.status))
           const buffer = await response.arrayBuffer()
@@ -909,7 +1004,7 @@ export const PlayerProvider = ({ children }: { children: ReactNode }) => {
     return () => {
       audio.removeEventListener('error', handleError)
     }
-  }, [currentSong, inferPlaybackMime, revokeObjectUrl, resolveUrl])
+  }, [currentSong, getSongStreamUrl, inferPlaybackMime, revokeObjectUrl])
 
   useEffect(() => {
     return () => {

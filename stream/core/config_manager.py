@@ -45,8 +45,10 @@ class Config:
     COOKIE_SECURE = ""
     COOKIE_SAMESITE = ""
     USERBOT_INDEX = ""
-    # 0: index only CHANNEL_ID. 1: index audio from any chat the bot receives.
+    # 0: index only CHANNEL_ID. 1: index audio from any chat the bot receives. 2 or "hybrid": allowlist of trusted sources
     FILTER_MODE = 0
+    COLLABORATOR_ID: list[int] = []
+    COLLABORATOR_IDS: list[int] = []
     CHANNEL_ID = 0
     DUMP_CHANNEL_ID = 0
     LRCLIB = False
@@ -169,9 +171,15 @@ class Config:
                     "SOURCE_CHANNEL_IDS",
                     "SUDO_USERS",
                     "PREMIUM_USERS",
+                    "COLLABORATOR_ID",
+                    "COLLABORATOR_IDS",
                 }:
                     value = cls._parse_id_list(value)
                 setattr(cls, key, value)
+        if cls.COLLABORATOR_ID and not cls.COLLABORATOR_IDS:
+            cls.COLLABORATOR_IDS = cls.COLLABORATOR_ID
+        elif cls.COLLABORATOR_IDS and not cls.COLLABORATOR_ID:
+            cls.COLLABORATOR_ID = cls.COLLABORATOR_IDS
         cls.MULTI_CLIENT_TOKENS = cls._collect_multi_client_tokens(ext_map)
 
     @staticmethod
@@ -208,6 +216,9 @@ class Config:
                         cls._is_empty_value(doc.get(k)) and not cls._is_empty_value(v)
                     ):
                         updates[k] = v
+                    # Also backfill COLLABORATOR_ID if missing
+                    if k in {"COLLABORATOR_ID", "COLLABORATOR_IDS"} and k not in doc:
+                        updates[k] = v
                 if updates:
                     await dbh.botsettings.update_document("bot_config", updates)
                     doc.update(updates)
@@ -234,6 +245,12 @@ class Config:
                     )
 
             cls._validate_config()
+
+            try:
+                from stream.core.source_filter import seed_from_config
+                await seed_from_config(cls.COLLABORATOR_ID or cls.COLLABORATOR_IDS)
+            except Exception as seed_err:
+                LOGGER(__name__).warning(f"Failed to seed collaborator IDs: {seed_err}")
         except Exception as e:
             LOGGER(__name__).error(f"Config loading failed: {e}")
             raise SystemExit(1)
@@ -276,6 +293,14 @@ class Config:
 
         if key in cls.SECRET_KEYS:
             raise RestartRequired(f"{key} updated and persisted; restart required")
+
+        if key == "FILTER_MODE":
+            try:
+                from stream.core.source_filter import invalidate_cache
+
+                invalidate_cache()
+            except Exception:
+                pass
 
         await cls.reload_config()
         return processed
@@ -334,7 +359,11 @@ class Config:
 
     @classmethod
     def _process_value(cls, key, value):
-        if key in {"OWNER_ID", "SOURCE_CHANNEL_IDS"}:
+        if key == "FILTER_MODE":
+            from stream.core.source_filter import FilterMode
+
+            return FilterMode.parse(value)
+        if key in {"OWNER_ID", "SOURCE_CHANNEL_IDS", "COLLABORATOR_ID", "COLLABORATOR_IDS"}:
             return cls._parse_id_list(value)
         if key == "MULTI_CLIENT_TOKENS":
             return cls._parse_str_list(value)
@@ -368,7 +397,7 @@ class Config:
             target_type = type(getattr(cls, key))
 
         if target_type is list:
-            if key in {"OWNER_ID", "SOURCE_CHANNEL_IDS", "SUDO_USERS", "PREMIUM_USERS"}:
+            if key in {"OWNER_ID", "SOURCE_CHANNEL_IDS", "SUDO_USERS", "PREMIUM_USERS", "COLLABORATOR_ID", "COLLABORATOR_IDS"}:
                 return cls._parse_id_list(value)
             return cls._parse_str_list(value)
 

@@ -461,7 +461,7 @@ export const clearAppCache = (): void => {
 }
 const spotifyCoverCache = new Map<string, string | null>()
 const spotifyCoverInFlight = new Map<string, Promise<string | null>>()
-const warmTrackInFlight = new Map<string, Promise<void>>()
+const warmTrackInFlight = new Map<string, Promise<{ ok: boolean; ready?: boolean }>>()
 const warmTrackAt = new Map<string, number>()
 const browseTracksInFlight = new Map<number, Promise<BrowseResponse>>()
 const favouriteIdsInFlight = new Map<
@@ -704,70 +704,67 @@ export const api = {
     return response.json()
   },
 
-  getStreamUrl(trackId: string): string {
+  getStreamUrl(trackId: string, options?: { format?: string; token?: string | null }): string {
     const baseUrl = `${API_BASE_URL}/tracks/${encodeURIComponent(trackId)}/stream`
-    const token = getAuthToken()
-    if (!token) return baseUrl
+    const token = options?.token !== undefined ? options.token : getAuthToken()
     try {
       const url = new URL(baseUrl)
-      url.searchParams.set('token', token)
+      if (token) url.searchParams.set('token', token)
+      if (options?.format) url.searchParams.set('format', options.format)
       return url.toString()
     } catch {
-      const search = new URLSearchParams({ token }).toString()
-      return `${baseUrl}?${search}`
+      const params = new URLSearchParams()
+      if (token) params.set('token', token)
+      if (options?.format) params.set('format', options.format)
+      const search = params.toString()
+      return search ? `${baseUrl}?${search}` : baseUrl
     }
   },
 
-  getStreamUrlWithToken(trackId: string, token: string | null = getAuthToken()): string {
-    const baseUrl = `${API_BASE_URL}/tracks/${encodeURIComponent(trackId)}/stream`
-    if (!token) return baseUrl
-    try {
-      const url = new URL(baseUrl)
-      url.searchParams.set('token', token)
-      return url.toString()
-    } catch {
-      const search = new URLSearchParams({ token }).toString()
-      return `${baseUrl}?${search}`
-    }
+  getStreamUrlWithToken(trackId: string, token: string | null = getAuthToken(), options?: { format?: string }): string {
+    return this.getStreamUrl(trackId, { ...options, token })
   },
 
-  streamTrack(trackId: string): string {
-    return this.getStreamUrl(trackId)
+  streamTrack(trackId: string, options?: { format?: string; token?: string | null }): string {
+    return this.getStreamUrl(trackId, options)
   },
 
-  async warmTrack(trackId: string): Promise<void> {
+  async warmTrack(trackId: string, options?: { force?: boolean }): Promise<{ ok: boolean; ready?: boolean }> {
     const now = Date.now()
     const lastWarmedAt = warmTrackAt.get(trackId) ?? 0
-    if (now - lastWarmedAt < 10 * 60 * 1000) return
+    if (!options?.force && now - lastWarmedAt < 10 * 60 * 1000) {
+      return { ok: true, ready: true }
+    }
     const existing = warmTrackInFlight.get(trackId)
     if (existing) return existing
 
-    try {
-      const token = getAuthToken()
-      const promise = fetch(`${API_BASE_URL}/tracks/${trackId}/warm`, {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
-        },
-        cache: 'no-store',
-      })
-        .then((response) => {
-          if (!response.ok) return
+    const token = getAuthToken()
+    const promise = (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/tracks/${encodeURIComponent(trackId)}/warm`, {
+          method: 'GET',
+          headers: {
+            accept: 'application/json',
+            ...(token ? { 'X-Auth-Token': token, Authorization: `Bearer ${token}` } : {}),
+          },
+          cache: 'no-store',
+        })
+        if (!response.ok) return { ok: false, ready: false }
+        const data = (await response.json()) as { ok?: boolean; ready?: boolean }
+        const isReady = data.ready !== false
+        if (isReady) {
           warmTrackAt.set(trackId, Date.now())
-        })
-        .catch((err) => {
-          void err
-        })
-        .finally(() => {
-          warmTrackInFlight.delete(trackId)
-        })
+        }
+        return { ok: true, ready: isReady }
+      } catch {
+        return { ok: false, ready: false }
+      } finally {
+        warmTrackInFlight.delete(trackId)
+      }
+    })()
 
-      warmTrackInFlight.set(trackId, promise)
-      return promise
-    } catch (err) {
-      void err
-    }
+    warmTrackInFlight.set(trackId, promise)
+    return promise
   },
 
   async getTrackDetails(trackId: string): Promise<TrackDetailsResponse> {

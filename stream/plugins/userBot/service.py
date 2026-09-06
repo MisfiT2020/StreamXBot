@@ -369,6 +369,15 @@ async def _index_or_dump_audio_message(
     if not _has_audio_media(message):
         return False
 
+    from stream.core.source_filter import is_message_allowed
+
+    allowed, reason = await is_message_allowed(message)
+    if not allowed:
+        log.debug(
+            f"[userbot] Message {getattr(message, 'id', None)} rejected by source filter: {reason}"
+        )
+        return False
+
     source_chat_id_for_meta = getattr(getattr(message, "chat", None), "id", None)
     if source_chat_id_for_meta is None:
         source_chat_id_for_meta = source_chat_id
@@ -421,6 +430,14 @@ async def _ingest_main_history(
     cancel_event: asyncio.Event | None = None,
     progress: dict | None = None,
 ) -> int:
+    from stream.core.source_filter import is_source_banned
+
+    if await is_source_banned(source_chat_id):
+        log.warning(
+            f"[userbot] Source chat {source_chat_id} is banned, skipping main history ingestion"
+        )
+        return 0
+
     state = db_handler.get_collection("userbot_state")
     state_id = f"history:{source_chat_id}:topic:0"
     doc = await state.read_document(state_id)
@@ -541,6 +558,14 @@ async def _ingest_topic_history(
     cancel_event: asyncio.Event | None = None,
     progress: dict | None = None,
 ) -> int:
+    from stream.core.source_filter import is_source_banned
+
+    if await is_source_banned(source_chat_id):
+        log.warning(
+            f"[userbot] Source chat {source_chat_id} is banned, skipping topic history ingestion"
+        )
+        return 0
+
     state = db_handler.get_collection("userbot_state")
     state_id = f"history:{source_chat_id}:topic:{int(topic_id)}"
     doc = await state.read_document(state_id) or {}
@@ -974,7 +999,7 @@ async def index_command(client, message):
                 break
             try:
                 await status.edit_text(
-                    f"Indexing in progress...\n\n✓ Indexed/Sent: {progress['copied']}\n❌ Failed Channels: {progress['failed']}",
+                    f"Indexing in progress...\n\n✓ Indexed/Sent: {progress['copied']}\nㄨ Failed Channels: {progress['failed']}",
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [
@@ -1006,7 +1031,7 @@ async def index_command(client, message):
 
     try:
         await status.edit_text(
-            f"Finished.\n\n✓ Indexed/Sent: {progress['copied']}\n❌ Failed Channels: {progress['failed']}"
+            f"Finished.\n\n✓ Indexed/Sent: {progress['copied']}\nㄨ Failed Channels: {progress['failed']}"
         )
     except Exception:
         pass

@@ -982,24 +982,26 @@ async def _enrich_audio_doc(
 
 
 def _audio_ingest_filter():
-    """Build the source filter once at startup from ``FILTER_MODE``.
-
-    Mode 0 keeps the existing single-channel behavior.  Mode 1 intentionally
-    leaves the chat unrestricted, allowing the bot to index audio sent in any
-    channel, group, or forum topic it can receive messages from.
+    """Build the source filter for audio and document messages.
+    Dynamic source checks (mode 0 channel only, mode 1 anyone, mode 2 hybrid allowlist,
+    and strict ban enforcement) are executed in channel_audio_filter via is_message_allowed().
     """
-    try:
-        filter_mode = int(getattr(Config, "FILTER_MODE", 0) or 0)
-    except (TypeError, ValueError):
-        filter_mode = 0
-
-    source_filter = filters.all if filter_mode == 1 else filters.chat(Config.CHANNEL_ID)
-    return source_filter & (filters.audio | filters.document)
+    return filters.audio | filters.document
 
 
 @bot.on_message(_audio_ingest_filter())
 async def channel_audio_filter(_, message: Message):
     try:
+        from stream.core.source_filter import is_message_allowed
+
+        allowed, reason = await is_message_allowed(message)
+        if not allowed:
+            LOG.debug(
+                f"[ingest] Ignored audio message {getattr(message, 'id', None)} "
+                f"from chat={getattr(getattr(message, 'chat', None), 'id', None)}: {reason}"
+            )
+            return
+
         key = f"{message.chat.id}:{message.id}"
         async with _INDEX_TASKS_LOCK:
             task = _INDEX_TASKS.get(key)

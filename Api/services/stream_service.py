@@ -1,13 +1,16 @@
 import asyncio
 import hashlib
 import logging
+import os
 import re
+import subprocess
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 from urllib.parse import quote
 
+import aiofiles
 from fastapi import HTTPException, Request
 from starlette.responses import Response, StreamingResponse
 
@@ -17,6 +20,11 @@ from stream import bot, get_primary_client_user_id
 from stream.core.config_manager import Config
 from stream.database.MongoDb import db_handler
 from stream.helpers.logger import LOGGER
+
+MEDIA_DIR = "stream_media"
+ALAC_CACHE_DIR = os.path.join(MEDIA_DIR, "alac_cache")
+_ALAC_TRANSCODE_LOCKS: dict[str, asyncio.Lock] = {}
+_ALAC_TRANSCODE_LOCKS_LOCK = asyncio.Lock()
 
 _CHUNK_SIZE = 1024 * 1024
 _MAX_STREAM_BUFFER_BYTES = 25_000_000
@@ -1135,6 +1143,265 @@ async def record_user_history(user_id: int, track_id: str, played_at: float) -> 
         LOG.error(f"[userHistory] Failed to insert for user_id={user_id} track_id={track_id}: {e}", exc_info=True)
 
 
+def _is_alac_track(doc: dict) -> bool:
+    if not isinstance(doc, dict):
+        return False
+    audio = doc.get("audio") if isinstance(doc.get("audio"), dict) else {}
+    telegram = doc.get("telegram") if isinstance(doc.get("telegram"), dict) else {}
+
+    audio_type = str(audio.get("type") or "").lower().strip()
+    audio_format = str(audio.get("format") or "").lower().strip()
+    mime_type = str(telegram.get("mime_type") or "").lower().strip()
+    file_name = str(telegram.get("file_name") or "").lower().strip()
+
+    if "alac" in audio_type or "alac" in audio_format or "alac" in mime_type:
+        return True
+    if "alac" in file_name:
+        return True
+    return False
+
+
+def _should_decode_alac(request: Request, doc: dict) -> bool:
+    if not _is_alac_track(doc):
+        return False
+
+    fmt = (request.query_params.get("format") or "").lower().strip()
+    if fmt in ("flac", "decoded", "transcode", "pcm", "wav"):
+        return True
+    decode_param = (
+        request.query_params.get("decode")
+        or request.query_params.get("transcode")
+        or request.query_params.get("alac_decode")
+        or ""
+    ).lower().strip()
+    if decode_param in ("1", "true", "yes", "flac"):
+        return True
+
+    if fmt in ("raw", "alac", "original", "source") or decode_param in ("0", "false", "no"):
+        return False
+
+    client_hdr = (
+        request.headers.get("x-streamx-client")
+        or request.headers.get("X-StreamX-Client")
+        or ""
+    ).lower().strip()
+    if "native" in client_hdr or "android-native" in client_hdr or "exoplayer" in client_hdr:
+        return False
+
+    ua = (
+        request.headers.get("user-agent") or request.headers.get("User-Agent") or ""
+    ).lower().strip()
+    sec_dest = (request.headers.get("sec-fetch-dest") or "").lower().strip()
+    sec_mode = (request.headers.get("sec-fetch-mode") or "").lower().strip()
+    sec_ua = (request.headers.get("sec-ch-ua") or "").lower().strip()
+    sec_platform = (request.headers.get("sec-ch-ua-platform") or "").lower().strip()
+
+    is_browser = bool(
+        sec_dest
+        or sec_mode
+        or sec_ua
+        or sec_platform
+        or "mozilla" in ua
+        or "chrome" in ua
+        or "firefox" in ua
+        or "safari" in ua
+        or "edge" in ua
+        or "edg" in ua
+        or "opera" in ua
+    )
+
+    if not is_browser:
+        return False
+
+    is_apple_os = (
+        ("macintosh" in ua or "mac os x" in ua or "iphone" in ua or "ipad" in ua or "ipod" in ua)
+        and "windows" not in ua
+        and "android" not in ua
+    )
+    if is_apple_os and ("safari" in ua or "applewebkit" in ua) and "chrome" not in ua and "edg" not in ua:
+        return False
+
+    is_windows = "windows" in ua or "win32" in ua or "win64" in ua or "windows" in sec_platform
+    is_android = "android" in ua or "android" in sec_platform
+    is_linux = "linux" in ua or "linux" in sec_platform
+
+    if is_windows or is_android or is_linux:
+        return True
+
+    return True
+
+
+def _prune_alac_cache_if_needed(max_files: int = 200, max_size_bytes: int = 5_000_000_000) -> None:
+    try:
+        if not os.path.isdir(ALAC_CACHE_DIR):
+            return
+        entries = []
+        total_size = 0
+        for fname in os.listdir(ALAC_CACHE_DIR):
+            if not fname.endswith(".flac"):
+                continue
+            fpath = os.path.join(ALAC_CACHE_DIR, fname)
+            try:
+                stat = os.stat(fpath)
+                entries.append((fpath, stat.st_mtime, stat.st_size))
+                total_size += stat.st_size
+            except OSError:
+                continue
+
+        if len(entries) <= max_files and total_size <= max_size_bytes:
+            return
+
+        entries.sort(key=lambda x: x[1])
+        while entries and (len(entries) > max_files or total_size > max_size_bytes):
+            oldest_path, _, oldest_size = entries.pop(0)
+            try:
+                os.remove(oldest_path)
+                total_size -= oldest_size
+            except OSError:
+                pass
+    except Exception as e:
+        LOG.warning(f"[ALAC-Decode] Cache pruning error: {e}")
+
+
+async def _get_alac_transcode_lock(track_id: str) -> asyncio.Lock:
+    async with _ALAC_TRANSCODE_LOCKS_LOCK:
+        lock = _ALAC_TRANSCODE_LOCKS.get(track_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _ALAC_TRANSCODE_LOCKS[track_id] = lock
+        return lock
+
+
+async def _stream_cached_file(
+    file_path: str,
+    from_bytes: int,
+    until_bytes: int | None,
+    chunk_size: int = 256 * 1024,
+) -> AsyncIterator[bytes]:
+    cursor = int(max(0, from_bytes))
+    target_end = None if until_bytes is None else int(until_bytes)
+    async with aiofiles.open(file_path, "rb") as f:
+        if cursor > 0:
+            await f.seek(cursor)
+        while True:
+            read_size = chunk_size
+            if target_end is not None:
+                remaining = (target_end - cursor) + 1
+                if remaining <= 0:
+                    break
+                read_size = min(read_size, remaining)
+            chunk = await f.read(read_size)
+            if not chunk:
+                break
+            cursor += len(chunk)
+            yield chunk
+            if target_end is not None and cursor > target_end:
+                break
+
+
+def _run_ffmpeg_transcode(src_file: str, dst_file: str) -> tuple[bool, str]:
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", src_file,
+        "-vn",
+        "-c:a", "flac",
+        "-compression_level", "0",
+        "-f", "flac",
+        dst_file,
+    ]
+    res = subprocess.run(cmd, capture_output=True)
+    return res.returncode == 0, res.stderr.decode("utf-8", errors="ignore")
+
+
+async def _ensure_alac_decoded_file(track_id: str, doc: dict) -> str:
+    os.makedirs(ALAC_CACHE_DIR, exist_ok=True)
+    target_file = os.path.join(ALAC_CACHE_DIR, f"{track_id}.flac")
+
+    if os.path.isfile(target_file) and os.path.getsize(target_file) > 10240:
+        return target_file
+
+    lock = await _get_alac_transcode_lock(track_id)
+    async with lock:
+        if os.path.isfile(target_file) and os.path.getsize(target_file) > 10240:
+            return target_file
+
+        temp_flac = os.path.join(
+            ALAC_CACHE_DIR, f"{track_id}.tmp_{os.getpid()}_{int(time.time() * 1000)}.flac"
+        )
+        temp_src = os.path.join(
+            ALAC_CACHE_DIR, f"{track_id}.src_{os.getpid()}_{int(time.time() * 1000)}.m4a"
+        )
+
+        telegram = doc.get("telegram") or {}
+        primary_file_id = (telegram.get("file_id") or "").strip()
+        playback_chat_id, playback_message_id = _playback_source_ids(doc)
+
+        from stream import acquire_stream_client, release_stream_client
+
+        client_user_id, client = await acquire_stream_client()
+        try:
+            client_key = str(int(client_user_id))
+            file_ids = (
+                telegram.get("file_ids")
+                if isinstance(telegram.get("file_ids"), dict)
+                else {}
+            )
+            file_id = (file_ids or {}).get(client_key) or ""
+            if not file_id:
+                file_id = await _ensure_client_file_id(
+                    track_id=track_id,
+                    client_user_id=int(client_user_id),
+                    client=client,
+                    source_chat_id=playback_chat_id,
+                    source_message_id=playback_message_id,
+                )
+
+            target: str | object = file_id
+            if playback_chat_id is not None and playback_message_id is not None:
+                try:
+                    msg = await client.get_messages(
+                        int(playback_chat_id), int(playback_message_id)
+                    )
+                    if msg and _message_has_downloadable_media(msg):
+                        target = msg
+                except Exception:
+                    pass
+
+            LOG.info(f"[ALAC-Decode] Fetching source media for track_id={track_id}")
+            async with aiofiles.open(temp_src, "wb") as sf:
+                async for chunk in client.stream_media(target):
+                    if chunk:
+                        await sf.write(chunk)
+
+            LOG.info(f"[ALAC-Decode] Transcoding {temp_src} -> {temp_flac}")
+            ok, err_msg = await asyncio.to_thread(_run_ffmpeg_transcode, temp_src, temp_flac)
+            if not ok or not os.path.isfile(temp_flac) or os.path.getsize(temp_flac) <= 10240:
+                raise RuntimeError(f"FFmpeg transcode failed: {err_msg[:300]}")
+
+            os.replace(temp_flac, target_file)
+            LOG.info(
+                f"[ALAC-Decode] Transcode completed successfully: {target_file} ({os.path.getsize(target_file)} bytes)"
+            )
+            _prune_alac_cache_if_needed()
+            return target_file
+
+        finally:
+            await release_stream_client(int(client_user_id))
+            try:
+                if os.path.isfile(temp_flac):
+                    os.remove(temp_flac)
+            except Exception:
+                pass
+            try:
+                if os.path.isfile(temp_src):
+                    os.remove(temp_src)
+            except Exception:
+                pass
+
+
 async def stream_track(track_id: str, request: Request):
     if bool(getattr(Config, "ONLY_API", False)) or bot is None:
         raise HTTPException(status_code=503, detail="streaming disabled")
@@ -1227,6 +1494,74 @@ async def stream_track(track_id: str, request: Request):
         if now_ts - last_rec > 15.0:
             _RECENTLY_RECORDED_HISTORY[cache_key] = now_ts
             asyncio.create_task(record_user_history(user_id, track_id, now_ts))
+
+    should_decode = _should_decode_alac(request, doc)
+    if should_decode:
+        flac_path = None
+        flac_file_size = None
+        try:
+            flac_path = await _ensure_alac_decoded_file(track_id, doc)
+            if flac_path and os.path.isfile(flac_path):
+                flac_file_size = os.path.getsize(flac_path)
+        except Exception as e:
+            LOG.error(
+                f"[ALAC-Decode] Failed to ensure decoded FLAC file for track_id={track_id}: {e}",
+                exc_info=True,
+            )
+            flac_path = None
+            flac_file_size = None
+
+        if flac_path and flac_file_size:
+            mime_type = "audio/flac"
+            file_size = flac_file_size
+
+            until_bytes: int | None = None
+            if has_range:
+                if end_byte is not None:
+                    until_bytes = int(end_byte)
+                elif file_size is not None:
+                    until_bytes = int(file_size) - 1
+            if file_size is not None and until_bytes is not None:
+                until_bytes = min(int(until_bytes), int(file_size) - 1)
+
+            if file_size is not None and has_range and from_bytes >= file_size:
+                raise HTTPException(status_code=416, detail="range not satisfiable")
+
+            status_code = (
+                206
+                if (has_range and file_size is not None and until_bytes is not None)
+                else 200
+            )
+
+            headers = {"Accept-Ranges": "bytes"}
+            if status_code == 206 and file_size is not None and until_bytes is not None:
+                headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+                headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
+            elif file_size is not None:
+                headers["Content-Length"] = str(file_size)
+
+            if (request.method or "").upper() == "HEAD":
+                return Response(
+                    content=b"", status_code=status_code, headers=headers, media_type=mime_type
+                )
+
+            iterator = _stream_cached_file(
+                file_path=flac_path,
+                from_bytes=from_bytes,
+                until_bytes=until_bytes,
+            )
+            wrapped = _wrap_with_play_count(
+                iterator=iterator,
+                request=request,
+                track_id=track_id,
+                from_bytes=from_bytes if status_code == 206 else 0,
+                file_size=file_size,
+                duration_sec=duration_sec,
+                bitrate_kbps=bitrate_kbps,
+            )
+            return StreamingResponse(
+                wrapped, status_code=status_code, headers=headers, media_type=mime_type
+            )
 
     until_bytes: int | None = None
     if has_range:
@@ -1468,6 +1803,73 @@ async def download_track(track_id: str, request: Request):
     has_range = bool(range_header) and start_byte is not None
     from_bytes = int(start_byte or 0)
 
+    should_decode = _should_decode_alac(request, doc)
+    if should_decode:
+        flac_path = None
+        flac_file_size = None
+        try:
+            flac_path = await _ensure_alac_decoded_file(track_id, doc)
+            if flac_path and os.path.isfile(flac_path):
+                flac_file_size = os.path.getsize(flac_path)
+        except Exception as e:
+            LOG.error(
+                f"[ALAC-Decode] Failed to ensure decoded FLAC file for download track_id={track_id}: {e}",
+                exc_info=True,
+            )
+            flac_path = None
+            flac_file_size = None
+
+        if flac_path and flac_file_size:
+            mime_type = "audio/flac"
+            file_size = flac_file_size
+            if filename.endswith(".m4a"):
+                filename = filename[:-4] + ".flac"
+            elif not filename.endswith(".flac"):
+                filename = filename + ".flac"
+
+            until_bytes: int | None = None
+            if has_range:
+                if end_byte is not None:
+                    until_bytes = int(end_byte)
+                elif file_size is not None:
+                    until_bytes = int(file_size) - 1
+            if file_size is not None and until_bytes is not None:
+                until_bytes = min(int(until_bytes), int(file_size) - 1)
+
+            if file_size is not None and has_range and from_bytes >= file_size:
+                raise HTTPException(status_code=416, detail="range not satisfiable")
+
+            status_code = (
+                206
+                if (has_range and file_size is not None and until_bytes is not None)
+                else 200
+            )
+
+            cd = _content_disposition(filename)
+            headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Disposition": cd,
+            }
+            if status_code == 206 and file_size is not None and until_bytes is not None:
+                headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+                headers["Content-Length"] = str((until_bytes - from_bytes) + 1)
+            elif file_size is not None:
+                headers["Content-Length"] = str(file_size)
+
+            if (request.method or "").upper() == "HEAD":
+                return Response(
+                    content=b"", status_code=status_code, headers=headers, media_type=mime_type
+                )
+
+            iterator = _stream_cached_file(
+                file_path=flac_path,
+                from_bytes=from_bytes,
+                until_bytes=until_bytes,
+            )
+            return StreamingResponse(
+                iterator, status_code=status_code, headers=headers, media_type=mime_type
+            )
+
     until_bytes: int | None = None
     if has_range:
         if end_byte is not None:
@@ -1603,6 +2005,7 @@ async def warm_track_cached(track_id: str) -> dict:
         {"_id": track_id},
         projection={
             "telegram": 1,
+            "audio": 1,
             "source_chat_id": 1,
             "source_message_id": 1,
             "cache_chat_id": 1,
@@ -1611,6 +2014,13 @@ async def warm_track_cached(track_id: str) -> dict:
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Track not found")
+
+    if _is_alac_track(doc):
+        flac_file = os.path.join(ALAC_CACHE_DIR, f"{track_id}.flac")
+        is_ready = os.path.isfile(flac_file) and os.path.getsize(flac_file) > 10240
+        if not is_ready:
+            asyncio.create_task(_ensure_alac_decoded_file(track_id, doc))
+        return {"ok": True, "ready": is_ready}
 
     playback_chat_id, playback_message_id = _playback_source_ids(doc)
 

@@ -50,7 +50,7 @@ const unlockAudioOnce = async () => {
     a.muted = true
     a.setAttribute('playsinline', 'true')
     a.setAttribute('webkit-playsinline', 'true')
-    a.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA='
+    a.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQIAAAAAAA=='
     await a.play()
     a.pause()
   } catch {

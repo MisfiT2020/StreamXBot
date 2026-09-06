@@ -223,19 +223,27 @@ async def password_login(
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     uid = int(doc["_id"])
-    first_name = doc.get("first_name") if isinstance(doc.get("first_name"), str) else None
+    first_name = doc.get("first_name") if isinstance(doc.get("first_name"), str) and doc.get("first_name").strip() else None
+    if not first_name:
+        first_name = doc.get("username") if isinstance(doc.get("username"), str) and doc.get("username").strip() else None
     profile_url = doc.get("profile_url") if isinstance(doc.get("profile_url"), str) else None
     if not profile_url:
         profile_url = doc.get("photo_url") if isinstance(doc.get("photo_url"), str) else None
     token = create_auth_token(user_id=uid, first_name=first_name, profile_url=profile_url)
     if set_cookie:
         _set_auth_cookie(response=response, token=token)
-    return {"ok": True, "user_id": uid, "token": token, "first_name": first_name, "profile_url": profile_url, "photo_url": profile_url}
+    return {"ok": True, "user_id": uid, "token": token, "first_name": first_name, "username": doc.get("username"), "profile_url": profile_url, "photo_url": profile_url}
 
 
 def _get_primary_owner_id() -> int:
-    owners = getattr(Config, "OWNER_ID", None) or []
-    for v in owners:
+    owners = getattr(Config, "OWNER_ID", None)
+    if isinstance(owners, (int, str)):
+        try:
+            val = int(owners)
+            return val if val > 0 else 0
+        except Exception:
+            return 0
+    for v in (owners or []):
         try:
             uid = int(v)
             if uid > 0:
@@ -246,10 +254,13 @@ def _get_primary_owner_id() -> int:
 
 
 async def _owner_password_exists() -> bool:
-    col = db_handler.get_collection("auth_config").collection
-    doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
-    stored = doc.get("password") if isinstance(doc, dict) else None
-    return isinstance(stored, dict) and bool(stored)
+    try:
+        col = db_handler.get_collection("auth_config").collection
+        doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
+        stored = doc.get("password") if isinstance(doc, dict) else None
+        return isinstance(stored, dict) and bool(stored)
+    except Exception:
+        return False
 
 
 @router.get("/setup/status")
@@ -306,10 +317,6 @@ async def owner_password_login(
     pwd = (payload.password or "").strip()
     if not pwd:
         raise HTTPException(status_code=400, detail="password is required")
-
-    owner_uid = _get_primary_owner_id()
-    if owner_uid <= 0:
-        raise HTTPException(status_code=500, detail="owner is not configured")
 
     col = db_handler.get_collection("auth_config").collection
     doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
@@ -453,14 +460,20 @@ async def auth_me(user_id: int | None = Depends(get_optional_user_id)):
 
     uid = int(user_id)
     owner_set = set()
-    for v in (getattr(Config, "OWNER_ID", None) or []):
+    owners = getattr(Config, "OWNER_ID", None)
+    if isinstance(owners, (int, str)):
+        owners = [owners]
+    for v in (owners or []):
         try:
             owner_set.add(int(v))
         except Exception:
             pass
             
     sudo_set = set()
-    for v in (getattr(Config, "SUDO_USERS", None) or []):
+    sudos = getattr(Config, "SUDO_USERS", None)
+    if isinstance(sudos, (int, str)):
+        sudos = [sudos]
+    for v in (sudos or []):
         try:
             sudo_set.add(int(v))
         except Exception:

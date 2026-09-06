@@ -151,6 +151,8 @@ class MongoDatabase:
             'presence_collection': 'presence',
             'listening_status_collection': 'listeningStatus',
             'notifications_collection': 'notifications',
+            'allowed_sources': 'allowedSources',
+            'banned_sources': 'bannedSources',
         }
         for attr, col_name in collections.items():
             coll = self.database[col_name]
@@ -219,6 +221,10 @@ class MongoDatabase:
             audio_col = self.audio_collection.collection
             await audio_col.create_index([("content_hash", 1)], unique=True, sparse=True)
             await audio_col.create_index([("fingerprint", 1)])
+            await audio_col.create_index([("deleted", 1), ("topic_name", 1), ("updated_at", -1), ("source_message_id", -1)], name="idx_topic_browse")
+            await audio_col.create_index([("deleted", 1), ("source_chat_id", 1), ("topic_name", 1), ("updated_at", -1)], name="idx_chat_topic_browse")
+            await audio_col.create_index([("topic_name", 1)], name="idx_topic_name")
+            await audio_col.create_index([("topic_id", 1)], name="idx_topic_id")
         except Exception:
             pass
         try:
@@ -240,6 +246,18 @@ class MongoDatabase:
             await user_albums_col.create_index([("user_id", 1), ("saved_at", -1)])
         except Exception:
             pass
+        try:
+            allowed_col = self.allowed_sources.collection
+            await allowed_col.create_index([("source_id", 1)], unique=True)
+            await allowed_col.create_index([("added_at", -1)])
+        except Exception:
+            pass
+        try:
+            banned_col = self.banned_sources.collection
+            await banned_col.create_index([("source_id", 1)], unique=True)
+            await banned_col.create_index([("banned_at", -1)])
+        except Exception:
+            pass
 
     def get_collection(self, col_name: str) -> MongoDB:
         key = (col_name or "").strip()
@@ -249,14 +267,44 @@ class MongoDatabase:
         if key in self._collections:
             return self._collections[key]
 
-        coll = self.database[key]
-        wrapper = MongoDB(coll)
-        self._collections[key] = wrapper
-        return wrapper
+        if self.database is not None:
+            coll = self.database[key]
+            wrapper = MongoDB(coll)
+            self._collections[key] = wrapper
+            return wrapper
+        raise RuntimeError("Database not initialized")
 
     def __getattr__(self, name: str):
         if name in self._collections:
             return self._collections[name]
+        if self.database is not None:
+            collections: Dict[str, str] = {
+                'users': 'users',
+                'chats_collection': 'chats',
+                'channels_collection': 'channels',
+                'botsettings': 'botsettings',
+                'audio_collection': 'audioTracks',
+                'jam_sessions': 'jamSessions',
+                'user_playlists': 'userPlaylists',
+                'playlist_tracks': 'playlistTracks',
+                'user_favourites': 'userFavourites',
+                'user_history': 'userHistory',
+                'userplayback_collection': 'userPlayback',
+                'globalplayback_collection': 'globalPlayback',
+                'friends_collection': 'friends',
+                'friend_requests_collection': 'friendRequests',
+                'presence_collection': 'presence',
+                'listening_status_collection': 'listeningStatus',
+                'notifications_collection': 'notifications',
+                'allowed_sources': 'allowedSources',
+                'banned_sources': 'bannedSources',
+            }
+            if name in collections:
+                coll = self.database[collections[name]]
+                wrapper = MongoDB(coll)
+                setattr(self, name, wrapper)
+                self._collections[name] = wrapper
+                return wrapper
         raise AttributeError(f"No such collection wrapper: {name}")
 
 db_handler = MongoDatabase()

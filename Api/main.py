@@ -25,6 +25,8 @@ from Api.routers.presence import router as presence_router
 from Api.routers.soundcloud import router as soundcloud_router
 from Api.routers.logs import router as logs_router
 from Api.routers.yt_dlp import router as yt_dlp_router
+from Api.routers.sources import router as sources_router
+from Api.routers.topics import router as topics_router
 
 from stream.core.config_manager import Config
 
@@ -47,11 +49,26 @@ app = FastAPI(lifespan=lifespan)
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
+def _get_cors_origins():
+    cors = getattr(Config, "CORS_ORIGIN", None) or getattr(Config, "CORS_ORIGINS", None)
+    if not cors:
+        return ["*"]
+    if isinstance(cors, list):
+        return [str(c).strip() for c in cors if str(c).strip()]
+    if isinstance(cors, str):
+        s = cors.strip()
+        if not s or s == "*":
+            return ["*"]
+        if "," in s:
+            return [x.strip() for x in s.split(",") if x.strip()]
+        return [s]
+    return ["*"]
+
 app.add_middleware(AuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=Config.CORS_ORIGIN,
+    allow_origins=_get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,6 +81,7 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(jam_router)
 app.include_router(webapp_router)
+app.include_router(topics_router)
 app.include_router(browse_router)
 app.include_router(tracks_router)
 app.include_router(playlists_router)
@@ -78,6 +96,7 @@ app.include_router(share_router)
 app.include_router(soundcloud_router)
 app.include_router(logs_router)
 app.include_router(yt_dlp_router)
+app.include_router(sources_router)
 
 
 

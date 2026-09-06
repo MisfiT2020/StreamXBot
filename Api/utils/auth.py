@@ -115,7 +115,7 @@ def verify_auth_token(token: str) -> dict:
 
 from typing import Optional
 
-def get_optional_user_id(
+async def get_optional_user_id(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
@@ -143,12 +143,18 @@ def get_optional_user_id(
         return None
     try:
         val = int(uid)
-        return val if val > 0 else None
+        if val <= 0:
+            return None
+        from stream.core.source_filter import is_source_banned
+
+        if await is_source_banned(val):
+            return None
+        return val
     except (ValueError, TypeError):
         return None
 
 
-def require_user_id(
+async def require_user_id(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
@@ -174,22 +180,28 @@ def require_user_id(
         uid_int = int(uid)
         if uid_int <= 0:
             raise HTTPException(status_code=401, detail="user login required")
+        from stream.core.source_filter import is_source_banned
+
+        if await is_source_banned(uid_int):
+            raise HTTPException(status_code=403, detail="user is banned")
         return uid_int
     except (ValueError, TypeError):
         raise HTTPException(status_code=401, detail="user login required")
 
 
-def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
+async def require_admin_user_id(user_id: int = Depends(require_user_id)) -> int:
     uid = int(user_id)
-    owners = getattr(Config, "OWNER_ID", None) or []
-    sudos = getattr(Config, "SUDO_USERS", None) or []
+    owners_raw = getattr(Config, "OWNER_ID", None)
+    owners = [owners_raw] if isinstance(owners_raw, (int, str)) else (owners_raw or [])
+    sudos_raw = getattr(Config, "SUDO_USERS", None)
+    sudos = [sudos_raw] if isinstance(sudos_raw, (int, str)) else (sudos_raw or [])
     allow: set[int] = set()
-    for v in (owners or []):
+    for v in owners:
         try:
             allow.add(int(v))
         except Exception:
             pass
-    for v in (sudos or []):
+    for v in sudos:
         try:
             allow.add(int(v))
         except Exception:

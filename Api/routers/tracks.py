@@ -4,11 +4,11 @@ import re
 import json
 import asyncio
 import difflib
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 import unicodedata
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 import httpx
@@ -1615,15 +1615,26 @@ class AdminDeleteTracksRequest(BaseModel):
     track_ids: list[str] | None = None
 
 
-@router.post("/admin/tracks/delete")
-async def admin_delete_tracks(payload: AdminDeleteTracksRequest, admin_user_id: int = Depends(require_admin_user_id)):
+@router.delete("/admin/tracks/delete")
+@router.post("/admin/tracks/delete", include_in_schema=False)
+async def admin_delete_tracks(
+    payload: AdminDeleteTracksRequest | None = Body(None),
+    track_id: str | None = Query(None),
+    track_ids: list[str] | None = Query(None),
+    admin_user_id: int = Depends(require_admin_user_id),
+):
     t_ids: list[str] = []
-    if isinstance(payload.track_id, list):
-        t_ids.extend(payload.track_id)
-    elif payload.track_id:
-        t_ids.append(payload.track_id)
-    if payload.track_ids:
-        t_ids.extend(payload.track_ids)
+    if payload:
+        if isinstance(payload.track_id, list):
+            t_ids.extend(payload.track_id)
+        elif payload.track_id:
+            t_ids.append(payload.track_id)
+        if payload.track_ids:
+            t_ids.extend(payload.track_ids)
+    if track_id:
+        t_ids.append(track_id)
+    if track_ids:
+        t_ids.extend(track_ids)
 
     track_ids: list[str] = []
     seen: set[str] = set()

@@ -241,10 +241,28 @@ async def download_youtube_track(
     """
     if not req.url:
         raise HTTPException(status_code=400, detail="YouTube URL is required")
-        
+
+    from stream.core.source_filter import (
+        FilterMode,
+        get_filter_mode,
+        is_source_allowed,
+        is_source_banned,
+    )
+
+    if await is_source_banned(user_id):
+        raise HTTPException(status_code=403, detail="User is banned from adding tracks")
+
+    mode = get_filter_mode()
+    if mode == FilterMode.HYBRID:
+        if not await is_source_allowed(user_id):
+            raise HTTPException(
+                status_code=403,
+                detail="User is not in allowed contributors collection (hybrid mode)",
+            )
+
     background_tasks.add_task(process_yt_download, req.url, user_id)
     return {
         "ok": True,
         "message": "YouTube audio download started in background",
-        "url": req.url
+        "url": req.url,
     }

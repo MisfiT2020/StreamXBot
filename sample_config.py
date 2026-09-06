@@ -26,10 +26,11 @@ SOURCE_CHANNEL_IDS = []
 CHAT_TOPIC = 0
 
 # MISC
-# 0 = accept media only from CHANNEL_ID; 1 = accept media from any chat/group/topic.
+# 0 = accept media only from CHANNEL_ID; 1 = accept media from any chat/group/topic; 2 or "hybrid" = allowlist of trusted sources.
 FILTER_MODE = 0
 CHANNEL_ID = -1000000000
 DUMP_CHANNEL_ID = 0
+COLLABORATOR_ID = []
 
 # LYRICS API
 LRCLIB = False

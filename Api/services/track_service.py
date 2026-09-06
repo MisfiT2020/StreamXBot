@@ -5,6 +5,7 @@ import hashlib
 import time
 from typing import Any, Optional
 import inspect
+import asyncio
 
 from pymongo import UpdateOne
 
@@ -55,6 +56,8 @@ def _browse_item_from_doc(doc: dict, liked_set: set[str] | None = None) -> Brows
         _id=tid,
         source_chat_id=doc.get("source_chat_id"),
         source_message_id=doc.get("source_message_id"),
+        topic_id=doc.get("topic_id"),
+        topic_name=doc.get("topic_name"),
         title=audio.get("title"),
         artist=audio.get("artist"),
         album=audio.get("album"),
@@ -109,7 +112,14 @@ def _search_pattern(q: str) -> str:
     return ".*".join(re.escape(t) for t in tokens[:8])
 
 
-async def browse_tracks(channel_id: Optional[int], page: int, per_page: int, user_id: Optional[int] = None) -> BrowseResponse:
+async def browse_tracks(
+    channel_id: Optional[int] = None,
+    page: int = 1,
+    per_page: int = 20,
+    user_id: Optional[int] = None,
+    topic_name: Optional[str] = None,
+    topic_id: Optional[int] = None,
+) -> BrowseResponse:
     per_page = int(per_page)
     if per_page <= 0:
         per_page = 20
@@ -122,6 +132,12 @@ async def browse_tracks(channel_id: Optional[int], page: int, per_page: int, use
     query: dict[str, Any] = {"deleted": {"$ne": True}}
     if channel_id is not None:
         query["source_chat_id"] = int(channel_id)
+    if topic_name:
+        t_clean = topic_name.strip()
+        if t_clean:
+            query["topic_name"] = t_clean
+    if topic_id is not None:
+        query["topic_id"] = int(topic_id)
 
     sort = [("source_message_id", -1)] if channel_id is not None else [("updated_at", -1), ("created_at", -1), ("_id", -1)]
     projection = {
@@ -131,20 +147,212 @@ async def browse_tracks(channel_id: Optional[int], page: int, per_page: int, use
         "audio": 1,
         "spotify": 1,
         "updated_at": 1,
+        "topic_id": 1,
+        "topic_name": 1,
     }
 
-    total = await col.count_documents(query)
-    cursor = col.find(query, projection).sort(sort).skip(skip).limit(per_page)
+    total, docs = await asyncio.gather(
+        col.count_documents(query),
+        col.find(query, projection).sort(sort).skip(skip).limit(per_page).to_list(length=per_page),
+    )
 
-    docs = await cursor.to_list(length=per_page)
     track_ids = [_as_str_id(d.get("_id")) for d in docs]
     liked_set = await get_user_liked_track_ids(user_id, track_ids)
 
     items: list[BrowseItem] = []
+    cover_url: str | None = None
     for doc in docs:
-        items.append(_browse_item_from_doc(doc, liked_set))
+        item = _browse_item_from_doc(doc, liked_set)
+        items.append(item)
+        if not cover_url and item.cover_url:
+            cover_url = item.cover_url
 
-    return BrowseResponse(page=page, per_page=per_page, total=total, items=items)
+    return BrowseResponse(page=page, per_page=per_page, total=total, items=items, cover_url=cover_url)
+
+
+_TOPICS_CACHE: dict[str, tuple[float, dict]] = {}
+_TOPICS_CACHE_TTL = 60.0
+
+
+async def get_unique_topics(
+    *,
+    channel_id: Optional[int] = None,
+    limit: int = 100,
+    refresh: bool = False,
+) -> dict:
+    limit = max(1, min(int(limit), 500))
+    cache_key = f"{channel_id}:{limit}"
+
+    now = time.time()
+    if not refresh and cache_key in _TOPICS_CACHE:
+        ts, cached = _TOPICS_CACHE[cache_key]
+        if now - ts < _TOPICS_CACHE_TTL:
+            return cached
+
+    col = get_audio_tracks_collection()
+    match_filter: dict[str, Any] = {
+        "deleted": {"$ne": True},
+        "topic_name": {"$exists": True, "$type": "string", "$nin": ["", "null", "None"]},
+    }
+    if channel_id is not None:
+        match_filter["source_chat_id"] = int(channel_id)
+
+    pipeline = [
+        {"$match": match_filter},
+        {
+            "$sort": {
+                "updated_at": -1,
+                "source_message_id": -1,
+            }
+        },
+        {
+            "$group": {
+                "_id": "$topic_name",
+                "topic_id": {"$first": "$topic_id"},
+                "source_chat_id": {"$first": "$source_chat_id"},
+                "cover_url": {"$first": "$spotify.cover_url"},
+                "big_cover_url": {"$first": "$spotify.big_cover_url"},
+                "raw_thumbnails": {"$push": "$spotify.cover_url"},
+                "count": {"$sum": 1},
+                "latest_updated_at": {"$first": "$updated_at"},
+            }
+        },
+        {
+            "$project": {
+                "topic_id": 1,
+                "source_chat_id": 1,
+                "cover_url": 1,
+                "big_cover_url": 1,
+                "thumbnails": {"$slice": ["$raw_thumbnails", 8]},
+                "count": 1,
+                "latest_updated_at": 1,
+            }
+        },
+        {"$sort": {"count": -1, "_id": 1}},
+        {"$limit": limit},
+    ]
+
+    cursor = await col.aggregate(pipeline, allowDiskUse=True)
+    docs = await cursor.to_list(length=limit)
+
+    items: list[dict] = []
+    topic_names: list[str] = []
+
+    for d in docs:
+        name = str(d.get("_id") or "").strip()
+        if not name:
+            continue
+        topic_names.append(name)
+
+        cover = _clean_url(d.get("big_cover_url") or d.get("cover_url"))
+        raw_thumbs = d.get("thumbnails") or []
+        thumbs = [
+            _clean_url(t)
+            for t in raw_thumbs
+            if isinstance(t, str) and _clean_url(t)
+        ]
+        unique_thumbs = list(dict.fromkeys(thumbs))[:4]
+        if not cover and unique_thumbs:
+            cover = unique_thumbs[0]
+
+        items.append({
+            "name": name,
+            "topic_name": name,
+            "topic_id": d.get("topic_id"),
+            "count": int(d.get("count") or 0),
+            "cover_url": cover or None,
+            "thumbnail_url": cover or None,
+            "normal_thumbnail": cover or None,
+            "thumbnails": unique_thumbs,
+            "source_chat_id": d.get("source_chat_id"),
+            "endpoint": f"/topics/{name}/tracks",
+        })
+
+    result = {
+        "ok": True,
+        "total": len(items),
+        "items": items,
+        "topics": topic_names,
+    }
+    _TOPICS_CACHE[cache_key] = (now, result)
+    return result
+
+
+async def browse_topic_tracks(
+    topic_name: str,
+    *,
+    channel_id: Optional[int] = None,
+    page: int = 1,
+    per_page: int = 20,
+    user_id: Optional[int] = None,
+) -> BrowseResponse:
+    raw_topic = (topic_name or "").strip()
+    if not raw_topic:
+        return BrowseResponse(page=page, per_page=per_page, total=0, items=[], cover_url=None)
+
+    per_page = int(per_page)
+    if per_page <= 0:
+        per_page = 20
+    if per_page > 100:
+        per_page = 100
+    page = int(page)
+    if page < 1:
+        page = 1
+    skip = (page - 1) * per_page
+
+    col = get_audio_tracks_collection()
+
+    # Fast path: B-tree indexed exact match query
+    query: dict[str, Any] = {
+        "deleted": {"$ne": True},
+        "topic_name": raw_topic,
+    }
+    if channel_id is not None:
+        query["source_chat_id"] = int(channel_id)
+
+    projection = {
+        "_id": 1,
+        "source_chat_id": 1,
+        "source_message_id": 1,
+        "audio": 1,
+        "spotify": 1,
+        "updated_at": 1,
+        "topic_id": 1,
+        "topic_name": 1,
+    }
+    sort = [("updated_at", -1), ("source_message_id", -1), ("_id", -1)]
+
+    total, docs = await asyncio.gather(
+        col.count_documents(query),
+        col.find(query, projection).sort(sort).skip(skip).limit(per_page).to_list(length=per_page),
+    )
+
+    # Fallback to case-insensitive match if exact match returned 0
+    if total == 0:
+        regex_query: dict[str, Any] = {
+            "deleted": {"$ne": True},
+            "topic_name": {"$regex": f"^{re.escape(raw_topic)}$", "$options": "i"},
+        }
+        if channel_id is not None:
+            regex_query["source_chat_id"] = int(channel_id)
+
+        total, docs = await asyncio.gather(
+            col.count_documents(regex_query),
+            col.find(regex_query, projection).sort(sort).skip(skip).limit(per_page).to_list(length=per_page),
+        )
+
+    track_ids = [_as_str_id(d.get("_id")) for d in docs]
+    liked_set = await get_user_liked_track_ids(user_id, track_ids)
+
+    items: list[BrowseItem] = []
+    cover_url: str | None = None
+    for doc in docs:
+        item = _browse_item_from_doc(doc, liked_set)
+        items.append(item)
+        if not cover_url and item.cover_url:
+            cover_url = item.cover_url
+
+    return BrowseResponse(page=page, per_page=per_page, total=total, items=items, cover_url=cover_url)
 
 
 async def search_tracks(q: str, *, channel_id: Optional[int], page: int, per_page: int, user_id: Optional[int] = None) -> BrowseResponse:

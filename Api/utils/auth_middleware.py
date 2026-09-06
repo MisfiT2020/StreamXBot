@@ -20,8 +20,14 @@ _PROTECTED_PREFIXES: tuple[str, ...] = (
     "/tracks",
     "/albums",
     "/artists",
+    "/topics",
     "/search",
     "/browse",
+    "/library",
+    "/api/v1/library",
+    "/playlists",
+    "/favourites",
+    "/top-played",
     "/me",
     "/jam",
     "/friends",
@@ -33,7 +39,6 @@ _PROTECTED_PREFIXES: tuple[str, ...] = (
     "/test",
     "/daily-playlist",
     "/channelids",
-    "/playlists/available",
     "/covers/user-playlist",
 )
 
@@ -46,33 +51,33 @@ def _path_is_protected(path: str) -> bool:
     return False
 
 
-def _extract_token(request: Request) -> str:
+def _extract_tokens(request: Request) -> list[str]:
+    tokens = []
     auth_header = (request.headers.get("authorization") or "").strip()
     if auth_header:
         if auth_header.lower().startswith("bearer "):
-            return auth_header[7:].strip()
-        return auth_header
+            tokens.append(auth_header[7:].strip())
+        else:
+            tokens.append(auth_header)
     x_auth = (request.headers.get("x-auth-token") or "").strip()
     if x_auth:
-        return x_auth
-    cookie_token = (request.cookies.get("auth_token") or "").strip()
-    if cookie_token:
-        return cookie_token
-    cookie_token = (request.cookies.get("token") or "").strip()
-    if cookie_token:
-        return cookie_token
+        tokens.append(x_auth)
     query_token = (request.query_params.get("token") or "").strip()
     if query_token:
-        return query_token
+        tokens.append(query_token)
     raw_query = str(request.url.query or "")
     if raw_query:
         parsed = parse_qs(raw_query)
         vals = parsed.get("token")
         if vals:
-            token_from_query = str(vals[0]).strip()
-            if token_from_query:
-                return token_from_query
-    return ""  
+            t = str(vals[0]).strip()
+            if t and t not in tokens:
+                tokens.append(t)
+    for c_name in ("auth_token", "token"):
+        c = (request.cookies.get(c_name) or "").strip()
+        if c and c not in tokens:
+            tokens.append(c)
+    return tokens
 
 
 async def _owner_password_exists() -> bool:
@@ -82,13 +87,16 @@ async def _owner_password_exists() -> bool:
 
     from stream.database.MongoDb import db_handler
 
-    col = db_handler.get_collection("auth_config").collection
-    doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
-    stored = doc.get("password") if isinstance(doc, dict) else None
-    exists = isinstance(stored, dict) and bool(stored)
-    _SETUP_CACHE["value"] = exists
-    _SETUP_CACHE["expires"] = now + _SETUP_CACHE_TTL_SEC
-    return exists
+    try:
+        col = db_handler.get_collection("auth_config").collection
+        doc = await col.find_one({"_id": "owner_password"}, {"password": 1})
+        stored = doc.get("password") if isinstance(doc, dict) else None
+        exists = isinstance(stored, dict) and bool(stored)
+        _SETUP_CACHE["value"] = exists
+        _SETUP_CACHE["expires"] = now + _SETUP_CACHE_TTL_SEC
+        return exists
+    except Exception:
+        return False
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -114,24 +122,38 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 content={"ok": False, "detail": "setup required"},
             )
 
-        token = _extract_token(request)
-        is_optional = path.startswith("/artists") or path.startswith("/browse") or path.startswith("/search")
-        if not token:
-            if is_optional:
-                return await call_next(request)
+        tokens = _extract_tokens(request)
+        if not tokens:
             return JSONResponse(
                 status_code=401,
-                content={"ok": False, "detail": "missing auth token"},
+                content={"ok": False, "detail": "auth token required"},
             )
 
-        try:
-            verify_auth_token(token)
-        except Exception:
-            if is_optional:
-                return await call_next(request)
+        authenticated = False
+        valid_payload = None
+        for tok in tokens:
+            try:
+                valid_payload = verify_auth_token(tok)
+                authenticated = True
+                break
+            except Exception:
+                continue
+
+        if not authenticated:
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "invalid auth token"},
             )
+
+        if valid_payload:
+            uid = valid_payload.get("uid")
+            if uid and uid != "__api__":
+                from stream.core.source_filter import is_source_banned
+
+                if await is_source_banned(uid):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"ok": False, "detail": "user is banned"},
+                    )
 
         return await call_next(request)

@@ -6,6 +6,8 @@ class BrowseItem(BaseModel):
     id: str = Field(alias="_id")
     source_chat_id: int | None = None
     source_message_id: int | None = None
+    topic_id: int | None = None
+    topic_name: str | None = None
     title: str | None = None
     artist: str | None = None
     album: str | None = None

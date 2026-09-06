@@ -772,7 +772,7 @@ async def receive_add_remove_value(client: Client, message: Message):
             client,
             message.chat.id,
             state,
-            f"❌ Error: {str(e)}",
+            f"ㄨ Error: {str(e)}",
             keyboard
         )
         del edit_states[user_id]
@@ -843,7 +843,7 @@ async def receive_new_value(client: Client, message: Message):
             client,
             message.chat.id,
             state,
-            f"⚠️ {str(ve)}",
+            f"ⓘ {str(ve)}",
             keyboard
         )
     except Exception as error:
@@ -857,7 +857,7 @@ async def receive_new_value(client: Client, message: Message):
             client,
             message.chat.id,
             state,
-            f"❌ Error updating setting: {str(error)}",
+            f"ㄨ Error updating setting: {str(error)}",
             keyboard
         )
     finally:
@@ -869,3 +869,478 @@ async def close_menu(client: Client, query: CallbackQuery):
     if query.from_user.id in edit_states:
         del edit_states[query.from_user.id]
     await query.message.delete()
+
+
+@Client.on_message(filters.command(["filter_mode", "filtermode"]) & sudo_cmd)
+async def filter_mode_handler(client: Client, message: Message):
+    from stream.core.source_filter import (
+        FilterMode,
+        get_filter_mode,
+        invalidate_cache,
+    )
+
+    args = message.text.split()[1:] if message.text else []
+    if not args:
+        current = get_filter_mode()
+        await message.reply_text(
+            f"**Current Filter Mode:** `{current}` (`{FilterMode.to_string(current)}`)\n\n"
+            "**Modes:**\n"
+            "• `0` / `group_only`: Preferred channel only\n"
+            "• `1` / `anyone`: Accept files from any source\n"
+            "• `2` / `hybrid`: Accept files from configured allowlist only\n\n"
+            "**Usage:** `/filter_mode <0|1|2|hybrid>`"
+        )
+        return
+
+    val = args[0].strip().lower()
+    new_mode = FilterMode.parse(val)
+    await Config.update_config("FILTER_MODE", new_mode)
+    invalidate_cache()
+    await message.reply_text(
+        f"ꪜ Filter mode updated to `{new_mode}` (`{FilterMode.to_string(new_mode)}`)."
+    )
+
+
+async def _resolve_target_and_peer(
+    client: Client,
+    message: Message,
+    args: list[str],
+) -> tuple[int | None, str, str, str]:
+    """Resolve target ID, source_type, name, and remaining extra text.
+
+    Resolves from:
+    1. Replied message (forward_from_chat, sender_chat, from_user, forward_from)
+    2. Arguments (ID or @username)
+    3. Telegram client / Multi-client / Userbot peer resolution
+    4. Database stored records (channels, chats, users)
+    """
+    reply = message.reply_to_message
+    raw_target = None
+    extra_tokens = []
+
+    if args:
+        raw_target = args[0].strip()
+        extra_tokens = args[1:]
+    elif reply:
+        entity = (
+            getattr(reply, "forward_from_chat", None)
+            or getattr(reply, "sender_chat", None)
+            or getattr(reply, "from_user", None)
+            or getattr(reply, "forward_from", None)
+        )
+        if entity:
+            raw_target = getattr(entity, "id", None)
+
+    if raw_target is None or str(raw_target).strip() == "":
+        return None, "", "", ""
+
+    # Parse numeric IDs so Pyrogram does not treat them as phone numbers
+    target_peer = raw_target
+    if isinstance(raw_target, str):
+        cleaned = raw_target.strip()
+        # Handle t.me links e.g. https://t.me/c/2427151389/12 or https://t.me/channelname
+        if "t.me/" in cleaned:
+            parts = cleaned.rstrip("/").split("/")
+            last_part = parts[-1]
+            if len(parts) >= 2 and parts[-2] == "c" and last_part.isdigit():
+                cleaned = f"-100{last_part}"
+            elif len(parts) >= 3 and parts[-3] == "c" and parts[-2].isdigit():
+                cleaned = f"-100{parts[-2]}"
+            else:
+                cleaned = last_part
+
+        try:
+            target_peer = int(cleaned)
+        except (ValueError, TypeError):
+            target_peer = cleaned
+
+    # Attempt resolution via Telegram clients (primary bot, multi-clients, userbot)
+    chat = None
+    try:
+        chat = await client.get_chat(target_peer)
+    except Exception:
+        chat = None
+
+    if not chat:
+        try:
+            from stream import multi_clients
+
+            for c in (multi_clients or {}).values():
+                if c is not client:
+                    try:
+                        chat = await c.get_chat(target_peer)
+                        if chat:
+                            break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    if not chat:
+        try:
+            from stream.plugins.userBot.service import _USERBOT_INSTANCE
+
+            if _USERBOT_INSTANCE and getattr(_USERBOT_INSTANCE, "is_connected", False):
+                chat = await _USERBOT_INSTANCE.get_chat(target_peer)
+        except Exception:
+            chat = None
+
+    if chat:
+        source_id = int(chat.id)
+        chat_type_str = str(getattr(chat, "type", "")).lower()
+
+        if "channel" in chat_type_str:
+            source_type = "channel"
+            name = (
+                getattr(chat, "title", None)
+                or (f"@{chat.username}" if getattr(chat, "username", None) else "")
+                or f"Channel {source_id}"
+            )
+        elif "group" in chat_type_str or "supergroup" in chat_type_str:
+            source_type = "group"
+            name = (
+                getattr(chat, "title", None)
+                or (f"@{chat.username}" if getattr(chat, "username", None) else "")
+                or f"Group {source_id}"
+            )
+        else:
+            source_type = "user"
+            fn = getattr(chat, "first_name", "") or ""
+            ln = getattr(chat, "last_name", "") or ""
+            full_name = f"{fn} {ln}".strip()
+            if full_name:
+                name = (
+                    f"{full_name} (@{chat.username})"
+                    if getattr(chat, "username", None)
+                    else full_name
+                )
+            elif getattr(chat, "username", None):
+                name = f"@{chat.username}"
+            else:
+                name = f"User {source_id}"
+
+        # Cache in DB
+        try:
+            from stream.database.MongoDb import db_handler
+
+            if source_type == "channel":
+                await db_handler.channels_collection.collection.update_one(
+                    {"_id": source_id},
+                    {
+                        "$set": {
+                            "title": name,
+                            "type": source_type,
+                            "username": getattr(chat, "username", None),
+                        }
+                    },
+                    upsert=True,
+                )
+            elif source_type == "group":
+                await db_handler.chats_collection.collection.update_one(
+                    {"_id": source_id},
+                    {
+                        "$set": {
+                            "title": name,
+                            "type": source_type,
+                            "username": getattr(chat, "username", None),
+                        }
+                    },
+                    upsert=True,
+                )
+            elif source_type == "user":
+                await db_handler.users.collection.update_one(
+                    {"_id": source_id},
+                    {
+                        "$set": {
+                            "name": name,
+                            "username": getattr(chat, "username", None),
+                        }
+                    },
+                    upsert=True,
+                )
+        except Exception:
+            pass
+
+        extra_text = " ".join(extra_tokens).strip()
+        return source_id, source_type, name, extra_text
+
+    # If get_chat failed, resolve from database / fallback
+    try:
+        source_id = int(target_peer)
+    except (ValueError, TypeError):
+        return None, "", "", f"Could not resolve '{raw_target}' to a valid Telegram chat or user ID."
+
+    explicit_type = None
+    if extra_tokens and extra_tokens[0].lower() in {"channel", "group", "user"}:
+        explicit_type = extra_tokens[0].lower()
+        extra_tokens = extra_tokens[1:]
+
+    source_type = explicit_type or ("channel" if source_id < 0 else "user")
+
+    # Check MongoDB: channels, chats, users, allowed_sources, banned_sources
+    from stream.database.MongoDb import db_handler
+
+    name = ""
+    try:
+        # 1. Check channels_collection
+        doc = await db_handler.channels_collection.collection.find_one(
+            {"$or": [{"_id": source_id}, {"_id": str(source_id)}]}
+        )
+        if doc and (doc.get("title") or doc.get("name")):
+            name = doc.get("title") or doc.get("name")
+            if not explicit_type:
+                raw_t = str(doc.get("type", "")).lower()
+                if "channel" in raw_t:
+                    source_type = "channel"
+                elif "group" in raw_t:
+                    source_type = "group"
+                else:
+                    source_type = "channel" if source_id < 0 else "user"
+            if doc.get("username") and f"@{doc.get('username')}" not in name:
+                name += f" (@{doc.get('username')})"
+
+        # 2. Check chats_collection
+        if not name:
+            doc = await db_handler.chats_collection.collection.find_one(
+                {"$or": [{"_id": source_id}, {"_id": str(source_id)}]}
+            )
+            if doc and (doc.get("title") or doc.get("name")):
+                name = doc.get("title") or doc.get("name")
+                if not explicit_type:
+                    raw_t = str(doc.get("type", "")).lower()
+                    if "channel" in raw_t:
+                        source_type = "channel"
+                    elif "group" in raw_t:
+                        source_type = "group"
+                    else:
+                        source_type = "group" if source_id < 0 else "user"
+                if doc.get("username") and f"@{doc.get('username')}" not in name:
+                    name += f" (@{doc.get('username')})"
+
+        # 3. Check users collection
+        if not name:
+            doc = await db_handler.users.collection.find_one(
+                {"$or": [{"_id": source_id}, {"_id": str(source_id)}]}
+            )
+            if doc:
+                fn = doc.get("first_name") or ""
+                ln = doc.get("last_name") or ""
+                uname = doc.get("username")
+                full_name = f"{fn} {ln}".strip() or doc.get("name")
+                if full_name:
+                    name = f"{full_name} (@{uname})" if uname else full_name
+                elif uname:
+                    name = f"@{uname}"
+                if not explicit_type:
+                    source_type = "user"
+
+        # 4. Check allowed_sources / banned_sources
+        if not name:
+            doc = await db_handler.allowed_sources.collection.find_one(
+                {"source_id": source_id}
+            )
+            if not doc:
+                doc = await db_handler.banned_sources.collection.find_one(
+                    {"source_id": source_id}
+                )
+            if (
+                doc
+                and doc.get("name")
+                and not doc.get("name").startswith(("Channel -", "User ", "Group -"))
+            ):
+                name = doc.get("name")
+                if not explicit_type and doc.get("source_type"):
+                    source_type = doc.get("source_type")
+    except Exception:
+        pass
+
+    if not name:
+        name = f"{source_type.capitalize()} {source_id}"
+
+    extra_text = " ".join(extra_tokens).strip()
+    return source_id, source_type, name, extra_text
+
+
+@Client.on_message(filters.command(["allow", "allow_source", "allowsource"]) & sudo_cmd)
+async def allow_source_handler(client: Client, message: Message):
+    from stream.core.source_filter import add_allowed_source
+
+    args = message.text.split()[1:] if message.text else []
+    source_id, source_type, name, extra_text = await _resolve_target_and_peer(
+        client, message, args
+    )
+
+    if source_id is None:
+        await message.reply_text(
+            "**Usage:** `/allow <source_id|@username> [custom name]` (or reply to a message)\n"
+            "Example: `/allow -100123456789 PZP Music`"
+        )
+        return
+
+    # If extra text provided, use as custom name override
+    if extra_text:
+        name = extra_text
+
+    try:
+        doc = await add_allowed_source(
+            source_id=source_id,
+            source_type=source_type,
+            name=name,
+            added_by=message.from_user.id if message.from_user else 0,
+        )
+        await message.reply_text(
+            f"ꪜ **Added to Allowed Sources:**\n"
+            f"• **ID:** `{source_id}`\n"
+            f"• **Name:** `{name or 'N/A'}`\n"
+            f"• **Type:** `{source_type}`"
+        )
+    except Exception as e:
+        await message.reply_text(f"ㄨ Error adding allowed source: {e}")
+
+
+@Client.on_message(
+    filters.command(["disallow", "disallow_source", "disallowsource"]) & sudo_cmd
+)
+async def disallow_source_handler(client: Client, message: Message):
+    from stream.core.source_filter import remove_allowed_source
+
+    args = message.text.split()[1:] if message.text else []
+    source_id, source_type, name, _ = await _resolve_target_and_peer(
+        client, message, args
+    )
+
+    if source_id is None:
+        await message.reply_text(
+            "**Usage:** `/disallow <source_id|@username>` (or reply to a message)"
+        )
+        return
+
+    removed = await remove_allowed_source(source_id)
+    if removed:
+        await message.reply_text(
+            f"ꪜ **Removed from Allowed Sources:**\n"
+            f"• **ID:** `{source_id}`\n"
+            f"• **Name:** `{name or 'N/A'}`\n"
+            f"• **Type:** `{source_type}`"
+        )
+    else:
+        await message.reply_text(
+            f"ⓘ Source `{source_id}` was not found in allowed sources."
+        )
+
+
+@Client.on_message(
+    filters.command(["ban", "ban_source", "bansources", "bansource"]) & sudo_cmd
+)
+async def ban_source_handler(client: Client, message: Message):
+    from stream.core.source_filter import ban_source
+
+    args = message.text.split()[1:] if message.text else []
+    source_id, source_type, name, reason = await _resolve_target_and_peer(
+        client, message, args
+    )
+
+    if source_id is None:
+        await message.reply_text(
+            "**Usage:** `/ban <source_id|@username> [reason]` (or reply to a message)\n"
+            "Example: `/ban 123456789 Spamming tracks`"
+        )
+        return
+
+    try:
+        doc = await ban_source(
+            source_id=source_id,
+            source_type=source_type,
+            name=name,
+            reason=reason,
+            banned_by=message.from_user.id if message.from_user else 0,
+        )
+        await message.reply_text(
+            f"⊘ **Source Banned:**\n"
+            f"• **ID:** `{source_id}`\n"
+            f"• **Name:** `{name or 'N/A'}`\n"
+            f"• **Type:** `{source_type}`\n"
+            f"• **Reason:** `{reason or 'No reason provided'}`\n\n"
+            "_This source is strictly blocked from adding tracks and using the service._"
+        )
+    except Exception as e:
+        await message.reply_text(f"ㄨ Error banning source: {e}")
+
+
+@Client.on_message(
+    filters.command(["unban", "unban_source", "unbansources", "unbansource"]) & sudo_cmd
+)
+async def unban_source_handler(client: Client, message: Message):
+    from stream.core.source_filter import unban_source
+
+    args = message.text.split()[1:] if message.text else []
+    source_id, source_type, name, _ = await _resolve_target_and_peer(
+        client, message, args
+    )
+
+    if source_id is None:
+        await message.reply_text(
+            "**Usage:** `/unban <source_id|@username>` (or reply to a message)"
+        )
+        return
+
+    removed = await unban_source(source_id)
+    if removed:
+        await message.reply_text(
+            f"ꪜ **Source Unbanned:**\n"
+            f"• **ID:** `{source_id}`\n"
+            f"• **Name:** `{name or 'N/A'}`\n"
+            f"• **Type:** `{source_type}`"
+        )
+    else:
+        await message.reply_text(
+            f"ⓘ Source `{source_id}` was not found in banned sources."
+        )
+
+
+@Client.on_message(filters.command("sources") & sudo_cmd)
+async def sources_summary_handler(client: Client, message: Message):
+    from stream.core.source_filter import (
+        FilterMode,
+        get_all_allowed_sources,
+        get_all_banned_sources,
+        get_filter_mode,
+    )
+
+    mode = get_filter_mode()
+    allowed = await get_all_allowed_sources()
+    banned = await get_all_banned_sources()
+    channel_id = getattr(Config, "CHANNEL_ID", 0)
+
+    text = [
+        "**Sources & Filter Summary**",
+        f"• **Filter Mode:** `{mode}` (`{FilterMode.to_string(mode)}`)",
+        f"• **Main Channel ID:** `{channel_id}`",
+        f"• **Allowed Sources:** {len(allowed)}",
+        f"• **Banned Sources:** {len(banned)}",
+        "",
+    ]
+
+    if allowed:
+        text.append("**Allowed Sources:**")
+        for s in allowed[:15]:
+            name_part = f" - {s.get('name')}" if s.get("name") else ""
+            text.append(
+                f"• `{s.get('source_id')}` [{s.get('source_type', 'channel')}]{name_part}"
+            )
+        if len(allowed) > 15:
+            text.append(f"  ...and {len(allowed) - 15} more")
+        text.append("")
+
+    if banned:
+        text.append("**Banned Sources:**")
+        for b in banned[:15]:
+            name_part = f" - {b.get('name')}" if b.get("name") else ""
+            reason_part = f" (Reason: {b.get('reason')})" if b.get("reason") else ""
+            text.append(
+                f"• `{b.get('source_id')}` [{b.get('source_type', 'channel')}]{name_part}{reason_part}"
+            )
+        if len(banned) > 15:
+            text.append(f"  ...and {len(banned) - 15} more")
+
+    await message.reply_text("\n".join(text))
