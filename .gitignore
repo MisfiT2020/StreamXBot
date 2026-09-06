@@ -1,7 +1,6 @@
 __pycache__/
 .venv/
 venv/
-config.py
 *.session*
 *.txt
 .env
@@ -11,6 +10,7 @@ export/
 GenCovers/
 !requirements.txt
 !test.py
+.env
 
 
 logs

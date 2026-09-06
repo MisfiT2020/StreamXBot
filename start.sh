@@ -22,58 +22,6 @@ if [ -n "${KOYEB_APP_NAME:-}" ] || [ -n "${KOYEB_SERVICE_NAME:-}" ]; then
 fi
 
 
-WANT_ENV_CONFIG=0
-
-if [ "$IS_RENDER" = "1" ] || [ "$IS_HEROKU" = "1" ] || [ "$IS_KOYEB" = "1" ]; then
-  WANT_ENV_CONFIG=1
-fi
-
-echo "[common] WANT_ENV_CONFIG=${WANT_ENV_CONFIG}"
-
-
-if [ "$WANT_ENV_CONFIG" = "1" ]; then
-  if [ -z "${CONFIG_GIST:-}" ]; then
-    echo "[common] CONFIG_GIST not set"
-    exit 1
-  fi
-
-  echo "[common] Downloading config.py from CONFIG_GIST"
-  echo "[common] CONFIG_GIST=${CONFIG_GIST}"
-
-  tmp_cfg="$(mktemp)"
-
-  if curl -fsSL \
-      --retry 3 \
-      --retry-delay 2 \
-      --connect-timeout 10 \
-      --max-time 30 \
-      "${CONFIG_GIST}" -o "${tmp_cfg}"; then
-
-    if [ -s "${tmp_cfg}" ]; then
-      mv "${tmp_cfg}" "${APP_DIR}/config.py"
-      echo "[common] config.py downloaded successfully"
-    else
-      echo "[common] Downloaded config is empty"
-      rm -f "${tmp_cfg}"
-      exit 1
-    fi
-  else
-    rm -f "${tmp_cfg}"
-    echo "[common] Failed to download config.py"
-    exit 1
-  fi
-fi
-
-
-echo "[common] Checking config.py..."
-
-if [ -f "${APP_DIR}/config.py" ]; then
-  echo "[common] config.py exists"
-else
-  echo "[common] config.py NOT found!"
-fi
-
-
 VENV_PATH="${VENV_PATH:-/app/streamvenv}"
 
 if [ -d "$VENV_PATH" ]; then

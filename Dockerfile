@@ -45,6 +45,10 @@ COPY --from=frontend-builder /app/StreamXWeb/dist ./dist
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
 EXPOSE 8000
 
 CMD ["bash", "/app/start.sh"]

@@ -2,7 +2,7 @@ kurigram
 requests
 aiohttp
 tgcrypto
-dotenv
+python-dotenv
 pymongo
 apscheduler
 uvicorn[standard]
