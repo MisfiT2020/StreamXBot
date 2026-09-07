@@ -14,7 +14,6 @@ services:
     volumes:
       - ./.env:/app/.env:ro
       - ./cookies:/app/cookies
-      - ./Stream.session:/app/Stream.session
       - ./stream_media:/app/stream_media
 
     command: ["bash", "/app/start.sh"]

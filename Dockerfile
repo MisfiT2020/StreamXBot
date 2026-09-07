@@ -10,7 +10,7 @@ COPY StreamXWeb/ .
 
 RUN npm run build
 
-FROM python:3.12-slim-bullseye
+FROM python:3.12-slim-bookworm
 
 RUN apt-get update && \
     apt-get install -y \
