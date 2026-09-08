@@ -33,6 +33,10 @@ from stream.core.config_manager import Config
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_DIR = os.path.join(BASE_DIR, "dist")
+if not os.path.exists(DIST_DIR):
+    _web_dist = os.path.join(BASE_DIR, "StreamXWeb", "dist")
+    if os.path.exists(_web_dist):
+        DIST_DIR = _web_dist
 ASSETS_DIR = os.path.join(DIST_DIR, "assets")
 
 

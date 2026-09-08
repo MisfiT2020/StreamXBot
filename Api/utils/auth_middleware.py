@@ -51,6 +51,39 @@ def _path_is_protected(path: str) -> bool:
     return False
 
 
+_OPTIONAL_PREFIXES: tuple[str, ...] = (
+    "/browse",
+    "/tracks",
+    "/albums",
+    "/artists",
+    "/topics",
+    "/search",
+    "/playlists/available",
+    "/daily-playlist",
+    "/channelids",
+    "/covers",
+    "/share",
+    "/library/shuffle",
+    "/api/v1/library/shuffle",
+)
+
+
+def _is_optional_route(path: str, method: str) -> bool:
+    if method not in ("GET", "HEAD"):
+        return False
+
+    p = (path or "/").rstrip("/") or "/"
+    for prefix in _OPTIONAL_PREFIXES:
+        if p == prefix or p.startswith(prefix + "/"):
+            return True
+
+    # Allow public playlist listing (returns empty for guests) and shared playlist view
+    if p == "/playlists" or (p.startswith("/playlists/") and not p.endswith("/tracks")):
+        return True
+
+    return False
+
+
 def _extract_tokens(request: Request) -> list[str]:
     tokens = []
     auth_header = (request.headers.get("authorization") or "").strip()
@@ -104,12 +137,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     During first-run (owner password not yet configured), protected API
     routes return 503 so the frontend can redirect to the setup screen.
-    Public/static/auth routes are excluded. CORS preflight (OPTIONS) is
-    always allowed through so the CORSMiddleware can handle it.
+    Public/static/auth routes and browser HTML navigation are excluded.
+    Optional browsing routes allow unauthenticated/guest requests.
+    CORS preflight (OPTIONS) is always allowed through so the CORSMiddleware
+    can handle it.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # Allow browser HTML / SPA navigation directly through to serve frontend
+        accept = (request.headers.get("accept") or "").lower()
+        if request.method in ("GET", "HEAD") and "text/html" in accept:
             return await call_next(request)
 
         path = request.url.path or "/"
@@ -123,7 +163,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             )
 
         tokens = _extract_tokens(request)
+        is_optional = _is_optional_route(path, request.method)
+
         if not tokens:
+            if is_optional:
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "auth token required"},
@@ -140,6 +184,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 continue
 
         if not authenticated:
+            if is_optional:
+                return await call_next(request)
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "invalid auth token"},
